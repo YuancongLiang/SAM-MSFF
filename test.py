@@ -5,7 +5,7 @@ import argparse
 import os
 from utils import FocalDiceloss_IoULoss, generate_point, save_masks
 from torch.utils.data import DataLoader
-from DataLoader import TestingDataset
+from Dataset import TestingDataset
 from metrics import SegMetrics
 import time
 from tqdm import tqdm

@@ -1,22 +1,21 @@
-from segment_anything import sam_model_registry, SamPredictor
-import torch.nn as nn
+from segment_anything import build_sam, SamAutomaticMaskGenerator 
+from segment_anything import sam_model_registry
+import time
+from sam_lora import LoRA_Sam
 import torch
-import argparse
+import numpy as np
 import os
-from torch import optim
+import datetime
 from torch.utils.data import DataLoader
 from Dataset import TrainingDataset, stack_dict_batched
+from torch import optim
 from utils import FocalDiceloss_IoULoss, get_logger, generate_point, setting_prompt_none
-from metrics import SegMetrics
-import time
+import argparse
 from tqdm import tqdm
-import numpy as np
-import datetime
-from torch.nn import functional as F
-# from apex import amp
+from metrics import SegMetrics
 import random
-
-
+from torch.nn import functional as F
+torch.manual_seed(3407)
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--work_dir", type=str, default="workdir", help="work dir")
@@ -37,7 +36,6 @@ def parse_args():
     parser.add_argument("--point_list", type=list, default=[1, 3, 5, 9], help="point_list")
     parser.add_argument("--multimask", type=bool, default=True, help="ouput multimask")
     parser.add_argument("--encoder_adapter", type=bool, default=True, help="use adapter")
-    parser.add_argument("--use_amp", type=bool, default=False, help="use amp")
     args = parser.parse_args()
     if args.resume is not None:
         args.sam_checkpoint = None
@@ -57,7 +55,6 @@ def to_device(batch_input, device):
         else:
             device_input[key] = value
     return device_input
-
 
 def prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter = False):
     # 如果有point坐标提示
@@ -103,107 +100,68 @@ def prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_ite
     masks = F.interpolate(low_res_masks,(args.image_size, args.image_size), mode="bilinear", align_corners=False,)
     return masks, low_res_masks, iou_predictions
 
-
 def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
     train_loader = tqdm(train_loader)
     train_losses = []
     train_iter_metrics = [0] * len(args.metrics)
     for batch, batched_input in enumerate(train_loader):
-            batched_input = stack_dict_batched(batched_input)
-            batched_input = to_device(batched_input, args.device)
-            print(batched_input)
-            if random.random() > 0.5:
-                batched_input["point_coords"] = None
-                flag = "boxes"
+        batched_input = stack_dict_batched(batched_input)
+        batched_input = to_device(batched_input, args.device)
+        # TODO：冻结除了lora层以外的参数
+        for n, value in lora_sam.sam.image_encoder.named_parameters():
+            if "qkv" in n:
+                value.requires_grad = True
             else:
-                batched_input["boxes"] = None
-                flag = "point"
+                value.requires_grad = False
+        labels = batched_input["label"]
+        image_embeddings = model.image_encoder(batched_input["image"])
+        batch, _, _, _ = image_embeddings.shape
+        image_embeddings_repeat = []
+        for i in range(batch):
+            image_embed = image_embeddings[i]
+            image_embed = image_embed.repeat(args.mask_num, 1, 1, 1)
+            image_embeddings_repeat.append(image_embed)
+        image_embeddings = torch.cat(image_embeddings_repeat, dim=0)
 
-            for n, value in model.image_encoder.named_parameters():
-                if "Adapter" in n:
-                    value.requires_grad = True
-                else:
-                    value.requires_grad = False
+        masks, low_res_masks, iou_predictions = prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter = False)
+        loss = criterion(masks, labels, iou_predictions)
+        loss.backward(retain_graph=False)
+        optimizer.step()
+        optimizer.zero_grad()
+        if int(batch+1) % 50 == 0:
+            print(f'Epoch: {epoch+1}, Batch: {batch+1}, first mask prompt: {SegMetrics(masks, labels, args.metrics)}')
 
-            if args.use_amp:
-                labels = batched_input["label"].half()
-                image_embeddings = model.image_encoder(batched_input["image"].half())
-                
-                batch, _, _, _ = image_embeddings.shape
-                image_embeddings_repeat = []
-                for i in range(batch):
-                    image_embed = image_embeddings[i]
-                    image_embed = image_embed.repeat(args.mask_num, 1, 1, 1)
-                    image_embeddings_repeat.append(image_embed)
-                image_embeddings = torch.cat(image_embeddings_repeat, dim=0)
-
-                masks, low_res_masks, iou_predictions = prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter = False)
-                loss = criterion(masks, labels, iou_predictions)
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward(retain_graph=False)
-
+        point_num = random.choice(args.point_list)
+        batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
+        # batched_input = setting_prompt_none(batched_input)
+        # 如果我们对血管进行分割，是不应该有点提示的，这里应该将点提示删掉
+        batched_input = to_device(batched_input, args.device)
+        image_embeddings = image_embeddings.detach().clone()
+        for n, value in model.named_parameters():
+            if "image_encoder" in n:
+                value.requires_grad = False
             else:
-                labels = batched_input["label"]
-                image_embeddings = model.image_encoder(batched_input["image"])
-
-                batch, _, _, _ = image_embeddings.shape
-                image_embeddings_repeat = []
-                for i in range(batch):
-                    image_embed = image_embeddings[i]
-                    image_embed = image_embed.repeat(args.mask_num, 1, 1, 1)
-                    image_embeddings_repeat.append(image_embed)
-                image_embeddings = torch.cat(image_embeddings_repeat, dim=0)
-                # 第一轮迭代生成稀疏mask
-                masks, low_res_masks, iou_predictions = prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter = False)
-                loss = criterion(masks, labels, iou_predictions)
-                loss.backward(retain_graph=False)
-
+                value.requires_grad = True
+        # 后面不对encoder进行训练
+        init_mask_num = np.random.randint(1, args.iter_point - 1)
+        for iter in range(args.iter_point):
+            if iter == init_mask_num or iter == args.iter_point - 1:
+                batched_input = setting_prompt_none(batched_input)
+            masks, low_res_masks, iou_predictions = prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter=True)
+            loss = criterion(masks, labels, iou_predictions)
+            loss.backward(retain_graph=True)
             optimizer.step()
             optimizer.zero_grad()
-
-            if int(batch+1) % 50 == 0:
-                print(f'Epoch: {epoch+1}, Batch: {batch+1}, first {flag} prompt: {SegMetrics(masks, labels, args.metrics)}')
-            # 通过粗掩码生成提示点
-            point_num = random.choice(args.point_list)
-            batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
-            batched_input = to_device(batched_input, args.device)
-        
-            image_embeddings = image_embeddings.detach().clone()
-            for n, value in model.named_parameters():
-                if "image_encoder" in n:
-                    value.requires_grad = False
-                else:
-                    value.requires_grad = True
-            # 后面不对encoder进行训练
-            init_mask_num = np.random.randint(1, args.iter_point - 1)
-            for iter in range(args.iter_point):
-                if iter == init_mask_num or iter == args.iter_point - 1:
-                    batched_input = setting_prompt_none(batched_input)
-
-                if args.use_amp:
-                    masks, low_res_masks, iou_predictions = prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter=True)
-                    loss = criterion(masks, labels, iou_predictions)
-                    with amp.scale_loss(loss,  optimizer) as scaled_loss:
-                        scaled_loss.backward(retain_graph=True)
-                else:
-                    masks, low_res_masks, iou_predictions = prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter=True)
-                    loss = criterion(masks, labels, iou_predictions)
-                    loss.backward(retain_graph=True)
-                    
-                optimizer.step()
-                optimizer.zero_grad()
-              
-                if iter != args.iter_point - 1:
-                    point_num = random.choice(args.point_list)
-                    batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
-                    batched_input = to_device(batched_input, args.device)
+            if iter != args.iter_point - 1:
+                point_num = random.choice(args.point_list)
+                batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
+                batched_input = to_device(batched_input, args.device)
            
-                if int(batch+1) % 50 == 0:
-                    if iter == init_mask_num or iter == args.iter_point - 1:
-                        print(f'Epoch: {epoch+1}, Batch: {batch+1}, mask prompt: {SegMetrics(masks, labels, args.metrics)}')
-                    else:
-                        print(f'Epoch: {epoch+1}, Batch: {batch+1}, point {point_num} prompt: { SegMetrics(masks, labels, args.metrics)}')
-
+            if int(batch+1) % 50 == 0:
+                if iter == init_mask_num or iter == args.iter_point - 1:
+                    print(f'Epoch: {epoch+1}, Batch: {batch+1}, mask prompt: {SegMetrics(masks, labels, args.metrics)}')
+                else:
+                    print(f'Epoch: {epoch+1}, Batch: {batch+1}, point {point_num} prompt: { SegMetrics(masks, labels, args.metrics)}')
             if int(batch+1) % 200 == 0:
                 print(f"epoch:{epoch+1}, iteration:{batch+1}, loss:{loss.item()}")
                 save_path = os.path.join(f"{args.work_dir}/models", args.run_name, f"epoch{epoch+1}_batch{batch+1}_sam.pth")
@@ -218,52 +176,43 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
 
             train_batch_metrics = SegMetrics(masks, labels, args.metrics)
             train_iter_metrics = [train_iter_metrics[i] + train_batch_metrics[i] for i in range(len(args.metrics))]
-
+    
     return train_losses, train_iter_metrics
 
-
-
-def main(args):
-    model = sam_model_registry[args.model_type](args).to(args.device) 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+if __name__ == '__main__':
+    args = parse_args()
+    sam = sam_model_registry[args.model_type](args).to(args.device)
+    lora_sam = LoRA_Sam(sam,r = 4).to(args.device)
+    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, lora_sam.sam.parameters()), lr=args.lr)
     criterion = FocalDiceloss_IoULoss()
-
     if args.lr_scheduler:
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[5, 10], gamma = 0.5)
         print('*******Use MultiStepLR')
-
+    # args.resume这段未测试过
     if args.resume is not None:
         with open(args.resume, "rb") as f:
             checkpoint = torch.load(f)
-            model.load_state_dict(checkpoint['model'])
+            lora_sam.sam.load_state_dict(checkpoint['model'])
             optimizer.load_state_dict(checkpoint['optimizer'].state_dict())
             print(f"*******load {args.resume}")
 
-    if args.use_amp:
-        model, optimizer = amp.initialize(model, optimizer, opt_level="O1")
-        print("*******Mixed precision with Apex")
-    else:
-        print('*******Do not use mixed precision')
-
     train_dataset = TrainingDataset(args.data_path, image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
     train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=4)
-    print('*******Train data:', len(train_dataset))   
-
+    print('*******Train data:', len(train_dataset))
     loggers = get_logger(os.path.join(args.work_dir, "logs", f"{args.run_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M.log')}"))
 
     best_loss = 1e10
     l = len(train_loader)
-
+    
     for epoch in range(0, args.epochs):
-        model.train()
+        lora_sam.sam.train()
         train_metrics = {}
         start = time.time()
         os.makedirs(os.path.join(f"{args.work_dir}/models", args.run_name), exist_ok=True)
-        train_losses, train_iter_metrics = train_one_epoch(args, model, optimizer, train_loader, epoch, criterion)
+        train_losses, train_iter_metrics = train_one_epoch(args, lora_sam.sam, optimizer, train_loader, epoch, criterion)
 
         if args.lr_scheduler is not None:
             scheduler.step()
-
         train_iter_metrics = [metric / l for metric in train_iter_metrics]
         train_metrics = {args.metrics[i]: '{:.4f}'.format(train_iter_metrics[i]) for i in range(len(train_iter_metrics))}
 
@@ -274,17 +223,8 @@ def main(args):
         if average_loss < best_loss:
             best_loss = average_loss
             save_path = os.path.join(args.work_dir, "models", args.run_name, f"epoch{epoch+1}_sam.pth")
-            state = {'model': model.float().state_dict(), 'optimizer': optimizer}
+            state = {'model': lora_sam.sam.float().state_dict(), 'optimizer': optimizer}
             torch.save(state, save_path)
-            if args.use_amp:
-                model = model.half()
 
         end = time.time()
         print("Run epoch time: %.2fs" % (end - start))
-
-
-if __name__ == '__main__':
-    args = parse_args()
-    main(args)
-
-
