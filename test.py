@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument("--run_name", type=str, default="sammed", help="run model name")
     parser.add_argument("--batch_size", type=int, default=1, help="batch size")
     parser.add_argument("--image_size", type=int, default=256, help="image_size")
-    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--device', type=str, default='cuda:1')
     parser.add_argument("--data_path", type=str, default="data_demo", help="train data path") 
     parser.add_argument("--metrics", nargs='+', default=['iou', 'dice'], help="metrics")
     parser.add_argument("--model_type", type=str, default="vit_b", help="sam model_type")
@@ -36,13 +36,13 @@ def parse_args():
     parser.add_argument("--multimask", type=bool, default=True, help="ouput multimask")
     parser.add_argument("--encoder_adapter", type=bool, default=True, help="use adapter")
     parser.add_argument("--prompt_path", type=str, default=None, help="fix prompt path")
-    parser.add_argument("--save_pred", type=bool, default=False, help="save reslut")
+    parser.add_argument("--save_pred", type=bool, default=True, help="save reslut")
     args = parser.parse_args()
     if args.iter_point > 1:
         args.point_num = 1
     return args
 
-
+# 将数据批量导入device，batch_input是一个字典，保存了image和label的键值对
 def to_device(batch_input, device):
     device_input = {}
     for key, value in batch_input.items():
@@ -60,18 +60,20 @@ def to_device(batch_input, device):
 
 def postprocess_masks(low_res_masks, image_size, original_size):
     ori_h, ori_w = original_size
+    # 插值，将低分辨率的mask插值到image_size大小
     masks = F.interpolate(
         low_res_masks,
         (image_size, image_size),
         mode="bilinear",
         align_corners=False,
         )
-    
+    # 如果原图比image_size小，将mask放在中间，边缘进行填充
     if ori_h < image_size and ori_w < image_size:
         top = torch.div((image_size - ori_h), 2, rounding_mode='trunc')  #(image_size - ori_h) // 2
         left = torch.div((image_size - ori_w), 2, rounding_mode='trunc') #(image_size - ori_w) // 2
         masks = masks[..., top : ori_h + top, left : ori_w + left]
         pad = (top, left)
+    # 否则，继续插值到原图大小
     else:
         masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
         pad = None 
@@ -79,18 +81,19 @@ def postprocess_masks(low_res_masks, image_size, original_size):
 
 
 def prompt_and_decoder(args, batched_input, ddp_model, image_embeddings):
+    # 如果有point_coords，将point_coords作为prompt输入
     if  batched_input["point_coords"] is not None:
         points = (batched_input["point_coords"], batched_input["point_labels"])
     else:
         points = None
-
     with torch.no_grad():
+        # 将image_embeddings和point_coords输入到prompt_encoder中，得到稀疏嵌入sparse_embeddings和密集嵌入dense_embeddings
         sparse_embeddings, dense_embeddings = ddp_model.prompt_encoder(
             points=points,
             boxes=batched_input.get("boxes", None),
             masks=batched_input.get("mask_inputs", None),
         )
-
+        # 将image_embeddings和嵌入输入到mask_decoder中，得到低分辨率的mask和iou_predictions
         low_res_masks, iou_predictions = ddp_model.mask_decoder(
             image_embeddings = image_embeddings,
             image_pe = ddp_model.prompt_encoder.get_dense_pe(),
@@ -98,7 +101,7 @@ def prompt_and_decoder(args, batched_input, ddp_model, image_embeddings):
             dense_prompt_embeddings=dense_embeddings,
             multimask_output=args.multimask,
         )
-    
+    # 如果输出多个掩码
     if args.multimask:
         max_values, max_indexs = torch.max(iou_predictions, dim=1)
         max_values = max_values.unsqueeze(1)
@@ -110,7 +113,7 @@ def prompt_and_decoder(args, batched_input, ddp_model, image_embeddings):
     masks = F.interpolate(low_res_masks,(args.image_size, args.image_size), mode="bilinear", align_corners=False,)
     return masks, low_res_masks, iou_predictions
 
-
+# 是否已经保存过
 def is_not_saved(save_path, mask_name):
     masks_path = os.path.join(save_path, f"{mask_name}")
     if os.path.exists(masks_path):
@@ -153,7 +156,6 @@ def main(args):
                         "point_coords": batched_input["point_coords"].squeeze(1).cpu().numpy().tolist(),
                         "point_labels": batched_input["point_labels"].squeeze(1).cpu().numpy().tolist()
                         }
-
         with torch.no_grad():
             image_embeddings = model.image_encoder(batched_input["image"])
 
@@ -183,7 +185,7 @@ def main(args):
         masks, pad = postprocess_masks(low_res_masks, args.image_size, original_size)
         if args.save_pred:
             save_masks(masks, save_path, img_name, args.image_size, original_size, pad, batched_input.get("boxes", None), points_show)
-
+            print(save_path)
         loss = criterion(masks, ori_labels, iou_predictions)
         test_loss.append(loss.item())
 
