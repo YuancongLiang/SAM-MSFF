@@ -3,7 +3,7 @@
 
 from segment_anything import build_sam, SamPredictor
 from segment_anything import sam_model_registry
-
+import argparse
 import math
 import torch
 import torch.nn as nn
@@ -28,25 +28,68 @@ class _LoRA_qkv(nn.Module):
         qkv: nn.Module,
         linear_a_q: nn.Module,
         linear_b_q: nn.Module,
+        linear_a_k: nn.Module,
+        linear_b_k: nn.Module,
         linear_a_v: nn.Module,
         linear_b_v: nn.Module,
+        q=True,
+        k=True,
+        v=True,
     ):
         super().__init__()
         self.qkv = qkv
-        self.linear_a_q = linear_a_q
-        self.linear_b_q = linear_b_q
-        self.linear_a_v = linear_a_v
-        self.linear_b_v = linear_b_v
+        self.q = q
+        self.k = k
+        self.v = v
+        if self.q:
+            self.linear_a_q = linear_a_q
+            self.linear_b_q = linear_b_q
+        if self.k:
+            self.linear_a_k = linear_a_k
+            self.linear_b_k = linear_b_k
+        if self.v:
+            self.linear_a_v = linear_a_v
+            self.linear_b_v = linear_b_v
         self.dim = qkv.in_features
+        self.in_features = qkv.in_features
+        self.out_features = qkv.out_features
         self.w_identity = torch.eye(qkv.in_features)
 
     def forward(self, x):
         qkv = self.qkv(x)  # B,N,N,3*org_C
-        new_q = self.linear_b_q(self.linear_a_q(x))
-        new_v = self.linear_b_v(self.linear_a_v(x))
-        qkv[:, :, :, : self.dim] += new_q
-        qkv[:, :, :, -self.dim :] += new_v
+        if self.q:
+            new_q = self.linear_b_q(self.linear_a_q(x))
+            qkv[:, :, :, : self.dim] += new_q
+        if self.k:
+            new_k = self.linear_b_k(self.linear_a_k(x))
+            qkv[:, :, :, self.dim:-self.dim] += new_k
+        if self.v:
+            new_v = self.linear_b_v(self.linear_a_v(x))
+            qkv[:, :, :, -self.dim :] += new_v
         return qkv
+
+class _LoRA_output(nn.Module):
+
+    def __init__(
+        self,
+        proj: nn.Module,
+        linear_a_proj: nn.Module,
+        linear_b_proj: nn.Module,
+    ):
+        super().__init__()
+        self.proj = proj
+        self.linear_a_proj = linear_a_proj
+        self.linear_b_proj = linear_b_proj
+        self.dim = proj.in_features
+        self.in_features = proj.in_features
+        self.out_features = proj.out_features
+        self.w_identity = torch.eye(proj.in_features)
+
+    def forward(self, x):
+        proj = self.proj(x)  
+        new_proj = self.linear_b_proj(self.linear_a_proj(x))
+        proj += new_proj
+        return proj
 
 class LoRA_Sam(nn.Module):
     """Applies low-rank adaptation to a Sam model's image encoder.
@@ -65,7 +108,7 @@ class LoRA_Sam(nn.Module):
         torch.Size([1, 1000])
     """
 
-    def __init__(self, sam_model: Sam, r: int, lora_layer=None):
+    def __init__(self, sam_model: Sam, r: int, q=True,k=True,v=True,out=True,lora_layer=None):
         super(LoRA_Sam, self).__init__()
 
         assert r > 0
@@ -89,22 +132,42 @@ class LoRA_Sam(nn.Module):
             if t_layer_i not in self.lora_layer:
                 continue
             w_qkv_linear = blk.attn.qkv
+            w_proj_linear = blk.attn.proj
             self.dim = w_qkv_linear.in_features
             w_a_linear_q = nn.Linear(self.dim, r, bias=False)
             w_b_linear_q = nn.Linear(r, self.dim, bias=False)
+            w_a_linear_k = nn.Linear(self.dim, r, bias=False)
+            w_b_linear_k = nn.Linear(r, self.dim, bias=False)
             w_a_linear_v = nn.Linear(self.dim, r, bias=False)
             w_b_linear_v = nn.Linear(r, self.dim, bias=False)
+            w_a_linear_proj = nn.Linear(self.dim, r, bias=False)
+            w_b_linear_proj = nn.Linear(r, self.dim, bias=False)
             self.w_As.append(w_a_linear_q)
             self.w_Bs.append(w_b_linear_q)
+            self.w_As.append(w_a_linear_k)
+            self.w_Bs.append(w_b_linear_k)
             self.w_As.append(w_a_linear_v)
             self.w_Bs.append(w_b_linear_v)
+            self.w_As.append(w_a_linear_proj)
+            self.w_Bs.append(w_b_linear_proj)
             blk.attn.qkv = _LoRA_qkv(
-                w_qkv_linear,
-                w_a_linear_q,
-                w_b_linear_q,
-                w_a_linear_v,
-                w_b_linear_v,
+                qkv=w_qkv_linear,
+                linear_a_q=w_a_linear_q,
+                linear_b_q=w_b_linear_q,
+                linear_a_k=w_a_linear_k,
+                linear_b_k=w_b_linear_k,
+                linear_a_v=w_a_linear_v,
+                linear_b_v=w_b_linear_v,
+                q=q,
+                k=k,
+                v=v,
             )
+            if out:
+                blk.attn.proj = _LoRA_output(
+                    proj=w_proj_linear,
+                    linear_a_proj=w_a_linear_proj,
+                    linear_b_proj=w_b_linear_proj,
+                )
         self.reset_parameters()
         self.sam = sam_model
 
@@ -115,13 +178,13 @@ class LoRA_Sam(nn.Module):
         """
 
         assert filename.endswith(".safetensors")
-        _in = self.lora_vit.head.in_features
-        _out = self.lora_vit.head.out_features
+        _in = self._LoRA_qkv.head.in_features
+        _out = self._LoRA_qkv.head.out_features
         with safe_open(filename, framework="pt") as f:
             saved_key = f"fc_{_in}in_{_out}out"
             try:
                 saved_tensor = f.get_tensor(saved_key)
-                self.lora_vit.head.weight = Parameter(saved_tensor)
+                self._LoRA_qkv.head.weight = Parameter(saved_tensor)
             except ValueError:
                 print("this fc weight is not for this model")
 
@@ -139,9 +202,9 @@ class LoRA_Sam(nn.Module):
         a_tensors = {f"w_a_{i:03d}": self.w_As[i].weight for i in range(num_layer)}
         b_tensors = {f"w_b_{i:03d}": self.w_Bs[i].weight for i in range(num_layer)}
         
-        _in = self.lora_vit.head.in_features
-        _out = self.lora_vit.head.out_features
-        fc_tensors = {f"fc_{_in}in_{_out}out": self.lora_vit.head.weight}
+        _in = self.sam.image_encoder.blocks[0].attn.qkv.in_features
+        _out = self.sam.image_encoder.blocks[0].attn.qkv.out_features
+        fc_tensors = {f"fc_{_in}in_{_out}out": self.sam.image_encoder.blocks[0].attn.qkv.identity.weight}
         
         merged_dict = {**a_tensors, **b_tensors, **fc_tensors}
         save_file(merged_dict, filename)
@@ -179,6 +242,7 @@ class LoRA_Sam(nn.Module):
     def reset_parameters(self) -> None:
         for w_A in self.w_As:
             nn.init.kaiming_uniform_(w_A.weight, a=math.sqrt(5))
+            #nn.init.normal_(w_A.weight)
         for w_B in self.w_Bs:
             nn.init.zeros_(w_B.weight)
 
@@ -187,6 +251,17 @@ class LoRA_Sam(nn.Module):
 
 
 if __name__ == "__main__":
-    sam = sam_model_registry["vit_b"](checkpoint="sam_vit_b.pth")
-    lora_sam = LoRA_Sam(sam,4)
-    lora_sam.sam.image_encoder(torch.rand(size=(1,3,1024,1024)))
+    args = argparse.Namespace()
+    args.image_size = 256
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    args.encoder_adapter = True
+    # args.sam_checkpoint = "pretrain_model/sam_vit_b.pth"
+    args.sam_checkpoint = "workdir/models/sam-med2d/epoch30_sam.pth"
+    model = sam_model_registry["vit_b"](args).to(device)
+    lora_sam = LoRA_Sam(model,16).to(device)
+    with open(args.sam_checkpoint, "rb") as f:
+            state_dict = torch.load(f)
+            lora_sam.sam.load_state_dict(state_dict['model'])
+    print(lora_sam.sam)
+    
+    # lora_sam.sam.image_encoder(torch.rand(size=(1,3,256,256)).to(device))
