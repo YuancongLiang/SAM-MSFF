@@ -188,6 +188,201 @@ class TrainingDataset(Dataset):
     def __len__(self):
         return len(self.image_paths)
 
+class EyesDataset(Dataset):
+    def __init__(self, data_dir, image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5):
+        """
+        Initializes a training dataset.
+        Args:
+            data_dir (str): Directory containing the dataset.
+            image_size (int, optional): Desired size for the input images. Defaults to 256.
+            mode (str, optional): Mode of the dataset. Defaults to 'train'.
+            requires_name (bool, optional): Indicates whether to include image names in the output. Defaults to True.
+            num_points (int, optional): Number of points to sample. Defaults to 1.
+            num_masks (int, optional): Number of masks to sample. Defaults to 5.
+        """
+        self.image_size = image_size
+        self.requires_name = requires_name
+        self.point_num = point_num
+        self.mask_num = mask_num
+        self.pixel_mean = [123.675, 116.28, 103.53]
+        self.pixel_std = [58.395, 57.12, 57.375]
+        image_name = os.listdir(os.path.join(data_dir, 'image'))
+        self.image_paths = [data_dir +'/image/'+ i for i in image_name if i.endswith('jpg')]
+        self.label_paths = [i.replace('image/','mask/Result_').replace('jpg','png') for i in self.image_paths]
+    
+    def __getitem__(self, index):
+        """
+        Returns a sample from the dataset.
+        Args:
+            index (int): Index of the sample.
+        Returns:
+            dict: A dictionary containing the sample data.
+        """
+
+        image_input = {}
+        try:
+            image = cv2.imread(self.image_paths[index])
+            image = (image - self.pixel_mean) / self.pixel_std
+        except:
+            print(self.image_paths[index])
+
+        h, w, _ = image.shape
+        transforms = train_transforms(self.image_size, h, w)
+    
+        masks_list = []
+        boxes_list = []
+        point_coords_list, point_labels_list = [], []
+        mask_path = []
+        for _ in range(self.mask_num):
+            mask_path.append(self.label_paths[index])
+        for m in mask_path:
+            pre_mask = cv2.imread(m, 0)
+            if pre_mask.max() == 255:
+                pre_mask = pre_mask / 255
+
+            augments = transforms(image=image, mask=pre_mask)
+            image_tensor, mask_tensor = augments['image'], augments['mask'].to(torch.int64)
+
+            boxes = get_boxes_from_mask(mask_tensor)
+            point_coords, point_label = init_point_sampling(mask_tensor, self.point_num)
+
+            masks_list.append(mask_tensor)
+            boxes_list.append(boxes)
+            point_coords_list.append(point_coords)
+            point_labels_list.append(point_label)
+
+        mask = torch.stack(masks_list, dim=0)
+        boxes = torch.stack(boxes_list, dim=0)
+        point_coords = torch.stack(point_coords_list, dim=0)
+        point_labels = torch.stack(point_labels_list, dim=0)
+
+        image_input["image"] = image_tensor.unsqueeze(0)
+        image_input["label"] = mask.unsqueeze(1)
+        image_input["boxes"] = boxes
+        image_input["point_coords"] = point_coords
+        image_input["point_labels"] = point_labels
+
+        image_name = self.image_paths[index].split('/')[-1]
+        if self.requires_name:
+            image_input["name"] = image_name
+            return image_input
+        else:
+            return image_input
+    def __len__(self):
+        return len(self.image_paths)
+
+    def get_mean_std(self):
+        img_channels = 3
+        cumulative_mean = np.zeros(img_channels)
+        cumulative_std = np.zeros(img_channels)
+
+        for image_path in tqdm(self.image_paths):
+            image = cv2.imread(image_path)
+            for d in range(3):
+                cumulative_mean[d] += image[:, :, d].mean()
+                cumulative_std[d] += image[:, :, d].std()
+        self.pixel_mean = cumulative_mean / len(self.image_paths)
+        self.pixel_std = cumulative_std / len(self.image_paths)
+        print(f"mean: {self.pixel_mean}")
+        print(f"std: {self.pixel_std}")
+
+class StareDataset(Dataset):
+    def __init__(self, data_dir, image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5):
+        """
+        Initializes a training dataset.
+        Args:
+            data_dir (str): Directory containing the dataset.
+            image_size (int, optional): Desired size for the input images. Defaults to 256.
+            mode (str, optional): Mode of the dataset. Defaults to 'train'.
+            requires_name (bool, optional): Indicates whether to include image names in the output. Defaults to True.
+            num_points (int, optional): Number of points to sample. Defaults to 1.
+            num_masks (int, optional): Number of masks to sample. Defaults to 5.
+        """
+        self.image_size = image_size
+        self.requires_name = requires_name
+        self.point_num = point_num
+        self.mask_num = mask_num
+        self.pixel_mean = [21.42,43.33,74.29]
+        self.pixel_std = [21.56,37.87,58.93]
+        image_name = os.listdir(os.path.join(data_dir, 'image'))
+        self.image_paths = [data_dir +'/image/'+ i for i in image_name if i.endswith('ppm')]
+        self.label_paths = [i.replace('image','mask').replace('.ppm','.vk.ppm') for i in self.image_paths]
+    
+    def __getitem__(self, index):
+        """
+        Returns a sample from the dataset.
+        Args:
+            index (int): Index of the sample.
+        Returns:
+            dict: A dictionary containing the sample data.
+        """
+
+        image_input = {}
+        try:
+            image = cv2.imread(self.image_paths[index])
+            image = (image - self.pixel_mean) / self.pixel_std
+        except:
+            print(self.image_paths[index])
+
+        h, w, _ = image.shape
+        transforms = train_transforms(self.image_size, h, w)
+    
+        masks_list = []
+        boxes_list = []
+        point_coords_list, point_labels_list = [], []
+        mask_path = []
+        for _ in range(self.mask_num):
+            mask_path.append(self.label_paths[index])
+        for m in mask_path:
+            pre_mask = cv2.imread(m, 0)
+            if pre_mask.max() == 255:
+                pre_mask = pre_mask / 255
+
+            augments = transforms(image=image, mask=pre_mask)
+            image_tensor, mask_tensor = augments['image'], augments['mask'].to(torch.int64)
+
+            boxes = get_boxes_from_mask(mask_tensor)
+            point_coords, point_label = init_point_sampling(mask_tensor, self.point_num)
+
+            masks_list.append(mask_tensor)
+            boxes_list.append(boxes)
+            point_coords_list.append(point_coords)
+            point_labels_list.append(point_label)
+
+        mask = torch.stack(masks_list, dim=0)
+        boxes = torch.stack(boxes_list, dim=0)
+        point_coords = torch.stack(point_coords_list, dim=0)
+        point_labels = torch.stack(point_labels_list, dim=0)
+
+        image_input["image"] = image_tensor.unsqueeze(0)
+        image_input["label"] = mask.unsqueeze(1)
+        image_input["boxes"] = boxes
+        image_input["point_coords"] = point_coords
+        image_input["point_labels"] = point_labels
+
+        image_name = self.image_paths[index].split('/')[-1]
+        if self.requires_name:
+            image_input["name"] = image_name
+            return image_input
+        else:
+            return image_input
+    def __len__(self):
+        return len(self.image_paths)
+
+    def get_mean_std(self):
+        img_channels = 3
+        cumulative_mean = np.zeros(img_channels)
+        cumulative_std = np.zeros(img_channels)
+
+        for image_path in tqdm(self.image_paths):
+            image = cv2.imread(image_path)
+            for d in range(3):
+                cumulative_mean[d] += image[:, :, d].mean()
+                cumulative_std[d] += image[:, :, d].std()
+        self.pixel_mean = cumulative_mean / len(self.image_paths)
+        self.pixel_std = cumulative_std / len(self.image_paths)
+        print(f"mean: {self.pixel_mean}")
+        print(f"std: {self.pixel_std}")
 
 def stack_dict_batched(batched_input):
     out_dict = {}
@@ -202,6 +397,8 @@ def stack_dict_batched(batched_input):
 if __name__ == "__main__":
     train_dataset = TrainingDataset("data_demo", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
     print("Dataset:", len(train_dataset))
+    eyes_dataset = EyesDataset("data/eyes", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
+    eyes_dataset.get_mean_std()
     train_batch_sampler = DataLoader(dataset=train_dataset, batch_size=2, shuffle=True, num_workers=4)
     for i, batched_image in enumerate(tqdm(train_batch_sampler)):
         batched_image = stack_dict_batched(batched_image)

@@ -7,6 +7,10 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+*.out
+workdir/
+pretrain_model/
+data/
 .Python
 build/
 develop-eggs/

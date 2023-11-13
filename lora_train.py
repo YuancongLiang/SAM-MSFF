@@ -1,14 +1,18 @@
 from segment_anything import build_sam, SamAutomaticMaskGenerator 
 from segment_anything import sam_model_registry
 import time
+# from bitsandbytes import BitsAndBytesConfig
+# from transformers import AutoModelForCausalLM
 from sam_lora import LoRA_Sam
 import torch
 import numpy as np
 import os
 import datetime
+from cldice_loss.cldice import soft_cldice, soft_dice_cldice
 from torch.utils.data import DataLoader
-from Dataset import TrainingDataset, stack_dict_batched
+from Dataset import TrainingDataset, stack_dict_batched, StareDataset, EyesDataset
 from torch import optim
+from graph_cuts_loss.graph_cuts_loss import GC_2D
 from utils import FocalDiceloss_IoULoss, get_logger, generate_point, setting_prompt_none
 import argparse
 from tqdm import tqdm
@@ -19,23 +23,24 @@ torch.manual_seed(3407)
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--work_dir", type=str, default="workdir", help="work dir")
-    parser.add_argument("--run_name", type=str, default="sam-med2d", help="run model name")
-    parser.add_argument("--epochs", type=int, default=15, help="number of epochs")
-    parser.add_argument("--batch_size", type=int, default=2, help="train batch size")
+    parser.add_argument("--run_name", type=str, default="lora_nofocal", help="run model name")
+    parser.add_argument("--epochs", type=int, default=90, help="number of epochs")
+    parser.add_argument("--batch_size", type=int, default=64, help="train batch size")
     parser.add_argument("--image_size", type=int, default=256, help="image_size")
     parser.add_argument("--mask_num", type=int, default=5, help="get mask number")
-    parser.add_argument("--data_path", type=str, default="data_demo", help="train data path") 
+    parser.add_argument("--data_path", type=str, default="data/eyes", help="train data path") 
     parser.add_argument("--metrics", nargs='+', default=['iou', 'dice'], help="metrics")
     parser.add_argument('--device', type=str, default='cuda:1')
-    parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
-    parser.add_argument("--resume", type=str, default=None, help="load resume") 
+    parser.add_argument("--lr", type=float, default=1e-8, help="learning rate")
+    parser.add_argument("--resume", type=str, default='/home/liangyuancong/SAM-Med2D/pretrain_model/best_nofocal.pth', help="load resume") 
     parser.add_argument("--model_type", type=str, default="vit_b", help="sam model_type")
-    parser.add_argument("--sam_checkpoint", type=str, default="pretrain_model/sam-med2d_b.pth", help="sam checkpoint")
+    parser.add_argument("--sam_checkpoint", type=str, default="pretrain_model/pretrained_lora.pth", help="sam checkpoint")
     parser.add_argument("--iter_point", type=int, default=8, help="point iterations")
-    parser.add_argument('--lr_scheduler', type=str, default=None, help='lr scheduler')
+    parser.add_argument('--lr_scheduler', type=str, default=True, help='lr scheduler')
     parser.add_argument("--point_list", type=list, default=[1, 3, 5, 9], help="point_list")
     parser.add_argument("--multimask", type=bool, default=True, help="ouput multimask")
     parser.add_argument("--encoder_adapter", type=bool, default=True, help="use adapter")
+    parser.add_argument("--workers", type=int, default=4, help="amount of workers")
     args = parser.parse_args()
     if args.resume is not None:
         args.sam_checkpoint = None
@@ -103,16 +108,23 @@ def prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_ite
 def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
     train_loader = tqdm(train_loader)
     train_losses = []
-    train_iter_metrics = [0] * len(args.metrics)
+    
     for batch, batched_input in enumerate(train_loader):
+        
         batched_input = stack_dict_batched(batched_input)
         batched_input = to_device(batched_input, args.device)
-        # TODO：冻结除了lora层以外的参数
-        for n, value in lora_sam.sam.image_encoder.named_parameters():
+        # 冻结除了lora层以外的参数
+        # for n, value in model.sam.image_encoder.named_parameters():
+        for n, value in model.image_encoder.named_parameters():
             if "qkv" in n:
                 value.requires_grad = True
             else:
                 value.requires_grad = False
+        # for n, value in lora_sam.sam.image_encoder.named_parameters():
+        #     if "Adapter" in n:
+        #         value.requires_grad = True
+        #     else:
+        #         value.requires_grad = False
         labels = batched_input["label"]
         image_embeddings = model.image_encoder(batched_input["image"])
         batch, _, _, _ = image_embeddings.shape
@@ -133,7 +145,7 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
 
         point_num = random.choice(args.point_list)
         batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
-        # batched_input = setting_prompt_none(batched_input)
+        batched_input = setting_prompt_none(batched_input)
         # 如果我们对血管进行分割，是不应该有点提示的，这里应该将点提示删掉
         batched_input = to_device(batched_input, args.device)
         image_embeddings = image_embeddings.detach().clone()
@@ -145,6 +157,7 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
         # 后面不对encoder进行训练
         init_mask_num = np.random.randint(1, args.iter_point - 1)
         for iter in range(args.iter_point):
+            train_iter_metrics = [0] * len(args.metrics)
             if iter == init_mask_num or iter == args.iter_point - 1:
                 batched_input = setting_prompt_none(batched_input)
             masks, low_res_masks, iou_predictions = prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter=True)
@@ -176,15 +189,34 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
 
             train_batch_metrics = SegMetrics(masks, labels, args.metrics)
             train_iter_metrics = [train_iter_metrics[i] + train_batch_metrics[i] for i in range(len(args.metrics))]
-    
     return train_losses, train_iter_metrics
 
 if __name__ == '__main__':
     args = parse_args()
-    sam = sam_model_registry[args.model_type](args).to(args.device)
-    lora_sam = LoRA_Sam(sam,r = 4).to(args.device)
+    sam = sam_model_registry[args.model_type](args)
+
+    # qlora_sam = AutoModelForCausalLM.from_pretrained(
+    #     pretrained_model_name_or_path=sam,
+    #     load_in_4bit=True,
+    #     device_map='auto',
+    #     torch_dtype=torch.bfloat16,
+    #     quantization_config=BitsAndBytesConfig(
+    #         load_in_4bit=True,
+    #         bnb_4bit_compute_dtype=torch.bfloat16,
+    #         bnb_4bit_use_double_quant=True,
+    #         bnb_4bit_quant_type='nf4'
+    #     )
+    # )
+    # print(qlora_sam)
+
+
+    lora_sam = LoRA_Sam(sam,r = 16).to(args.device)
     optimizer = optim.AdamW(filter(lambda p: p.requires_grad, lora_sam.sam.parameters()), lr=args.lr)
-    criterion = FocalDiceloss_IoULoss()
+    # optimizer = optim.AdamW(filter(lambda p: p.requires_grad, sam.parameters()), lr=args.lr)
+    criterion = FocalDiceloss_IoULoss(weight=0.0)
+    # criterion = soft_dice_cldice()
+    # criterion = soft_add_focal_cldice()
+    # criterion = GC_2D(lmda=1)
     if args.lr_scheduler:
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[5, 10], gamma = 0.5)
         print('*******Use MultiStepLR')
@@ -193,11 +225,14 @@ if __name__ == '__main__':
         with open(args.resume, "rb") as f:
             checkpoint = torch.load(f)
             lora_sam.sam.load_state_dict(checkpoint['model'])
+            # sam.load_state_dict(checkpoint['model'])
             optimizer.load_state_dict(checkpoint['optimizer'].state_dict())
             print(f"*******load {args.resume}")
 
-    train_dataset = TrainingDataset(args.data_path, image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
-    train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=4)
+    train_dataset = EyesDataset(args.data_path, image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
+    #train_dataset = StareDataset('data/stare', image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
+    #train_dataset = TrainingDataset('data_demo', image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
+    train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=args.workers)
     print('*******Train data:', len(train_dataset))
     loggers = get_logger(os.path.join(args.work_dir, "logs", f"{args.run_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M.log')}"))
 
@@ -206,11 +241,12 @@ if __name__ == '__main__':
     
     for epoch in range(0, args.epochs):
         lora_sam.sam.train()
+        # sam.train()
         train_metrics = {}
         start = time.time()
         os.makedirs(os.path.join(f"{args.work_dir}/models", args.run_name), exist_ok=True)
         train_losses, train_iter_metrics = train_one_epoch(args, lora_sam.sam, optimizer, train_loader, epoch, criterion)
-
+        # train_losses, train_iter_metrics = train_one_epoch(args, sam, optimizer, train_loader, epoch, criterion)
         if args.lr_scheduler is not None:
             scheduler.step()
         train_iter_metrics = [metric / l for metric in train_iter_metrics]
@@ -224,6 +260,8 @@ if __name__ == '__main__':
             best_loss = average_loss
             save_path = os.path.join(args.work_dir, "models", args.run_name, f"epoch{epoch+1}_sam.pth")
             state = {'model': lora_sam.sam.float().state_dict(), 'optimizer': optimizer}
+            
+            # state = {'model': sam.float().state_dict(), 'optimizer': optimizer}
             torch.save(state, save_path)
 
         end = time.time()
