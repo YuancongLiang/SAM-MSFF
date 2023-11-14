@@ -13,13 +13,13 @@ def parse_args():
     parser.add_argument("--encoder_adapter", type=bool, default=True, help="if use adapter in encoder")
     parser.add_argument("--sam_checkpoint", type=str, default="pretrain_model/sam-med2d_b.pth", help="the checkpoint path of sam model")
 
-def calculate_iou(true_mask, predicted_mask):
+def calculate_iou(true_mask, predicted_mask) -> np.ndarray:
     intersection = np.logical_and(true_mask, predicted_mask)
     union = np.logical_or(true_mask, predicted_mask)
     iou = np.sum(intersection) / np.sum(union)
     return iou
 
-def calculate_dice_score(true_mask, predicted_mask):
+def calculate_dice_score(true_mask, predicted_mask) -> np.ndarray:
     intersection = np.logical_and(true_mask, predicted_mask)
     dice_score = 2 * np.sum(intersection) / (np.sum(true_mask) + np.sum(predicted_mask))
     return dice_score
