@@ -9,8 +9,9 @@ import numpy as np
 import os
 import datetime
 from cldice_loss.cldice import soft_cldice, soft_dice_cldice
+from torch.utils.data import ConcatDataset
 from torch.utils.data import DataLoader
-from Dataset import TrainingDataset, stack_dict_batched, StareDataset, EyesDataset
+from Dataset import TrainingDataset, stack_dict_batched, StareDataset, EyesDataset, FivesDataset, Chasedb1Dataset
 from torch import optim
 from graph_cuts_loss.graph_cuts_loss import GC_2D
 from utils import FocalDiceloss_IoULoss, get_logger, generate_point, setting_prompt_none
@@ -23,16 +24,16 @@ torch.manual_seed(3407)
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--work_dir", type=str, default="workdir", help="work dir")
-    parser.add_argument("--run_name", type=str, default="lora_patch", help="run model name")
-    parser.add_argument("--epochs", type=int, default=90, help="number of epochs")
-    parser.add_argument("--batch_size", type=int, default=64, help="train batch size")
+    parser.add_argument("--run_name", type=str, default="stare_chasedb1_patch", help="run model name")
+    parser.add_argument("--epochs", type=int, default=40, help="number of epochs")
+    parser.add_argument("--batch_size", type=int, default=80, help="train batch size")
     parser.add_argument("--image_size", type=int, default=256, help="image_size")
     parser.add_argument("--mask_num", type=int, default=5, help="get mask number")
-    parser.add_argument("--data_path", type=str, default="data/eyes_patch", help="train data path") 
+    parser.add_argument("--data_path", type=str, default="data/fives_patch", help="train data path") 
     parser.add_argument("--metrics", nargs='+', default=['iou', 'dice'], help="metrics")
     parser.add_argument('--device', type=str, default='cuda:1')
-    parser.add_argument("--lr", type=float, default=1e-8, help="learning rate")
-    parser.add_argument("--resume", type=str, default='/home/liangyuancong/SAM-Med2D/pretrain_model/best_nofocal.pth', help="load resume") 
+    parser.add_argument("--lr", type=float, default=1e-9, help="learning rate")
+    parser.add_argument("--resume", type=str, default='/home/liangyuancong/SAM-Med2D/pretrain_model/fives_patch_past.pth', help="load resume") 
     parser.add_argument("--model_type", type=str, default="vit_b", help="sam model_type")
     parser.add_argument("--sam_checkpoint", type=str, default="pretrain_model/pretrained_lora.pth", help="sam checkpoint")
     parser.add_argument("--iter_point", type=int, default=8, help="point iterations")
@@ -213,7 +214,7 @@ if __name__ == '__main__':
     lora_sam = LoRA_Sam(sam,r = 16).to(args.device)
     optimizer = optim.AdamW(filter(lambda p: p.requires_grad, lora_sam.sam.parameters()), lr=args.lr)
     # optimizer = optim.AdamW(filter(lambda p: p.requires_grad, sam.parameters()), lr=args.lr)
-    criterion = FocalDiceloss_IoULoss(weight=3.0)
+    criterion = FocalDiceloss_IoULoss(weight=0.0)
     # criterion = soft_dice_cldice()
     # criterion = soft_add_focal_cldice()
     # criterion = GC_2D(lmda=1)
@@ -228,10 +229,13 @@ if __name__ == '__main__':
             # sam.load_state_dict(checkpoint['model'])
             optimizer.load_state_dict(checkpoint['optimizer'].state_dict())
             print(f"*******load {args.resume}")
-
-    train_dataset = EyesDataset(args.data_path, image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
+    train_dataset1 = StareDataset("data/stare_patch", image_size=256, mode='train', requires_name=False, point_num=1, mask_num=args.mask_num)
+    train_dataset2 = Chasedb1Dataset("data/chasedb1_patch", image_size=256, mode='train', requires_name=False, point_num=1, mask_num=args.mask_num)
+    train_dataset3 = FivesDataset(args.data_path, image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
+    #train_dataset = EyesDataset(args.data_path, image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
     #train_dataset = StareDataset('data/stare', image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
     #train_dataset = TrainingDataset('data_demo', image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
+    train_dataset = ConcatDataset([train_dataset1,train_dataset2])
     train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=args.workers)
     print('*******Train data:', len(train_dataset))
     loggers = get_logger(os.path.join(args.work_dir, "logs", f"{args.run_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M.log')}"))

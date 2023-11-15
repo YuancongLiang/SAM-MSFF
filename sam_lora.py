@@ -263,5 +263,7 @@ if __name__ == "__main__":
             state_dict = torch.load(f)
             lora_sam.sam.load_state_dict(state_dict['model'])
     print(lora_sam.sam)
+    for n, value in lora_sam.sam.named_parameters():
+        print(n,value.requires_grad)
     
     # lora_sam.sam.image_encoder(torch.rand(size=(1,3,256,256)).to(device))

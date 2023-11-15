@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from Dataset import EyesDataset
+from Dataset import EyesDataset,FivesDataset,Chasedb1Dataset,StareDataset
 from tqdm import tqdm
 
 def pad_image(image_path, patch_height=256, patch_width=256):
@@ -9,8 +9,8 @@ def pad_image(image_path, patch_height=256, patch_width=256):
     height, width, _ = image.shape
 
     # 计算需要填充的像素数量
-    pad_height = patch_height - (height % patch_height)
-    pad_width = patch_width - (width % patch_width)
+    pad_height = (patch_height - (height % patch_height))% patch_height
+    pad_width = (patch_width - (width % patch_width))% patch_width
 
     # 进行填充操作
     padded_image = cv2.copyMakeBorder(image, pad_height // 2, pad_height - (pad_height // 2), 
@@ -32,7 +32,8 @@ def adjust_image(image_path, patch_height, patch_width):
 
 def split_image(image_path:str, save_path:str, patch_height=256, patch_width=256):
     # 读取图像
-    image = adjust_image(image_path, patch_height, patch_width)
+    #image = adjust_image(image_path, patch_height, patch_width)
+    image = cv2.imread(image_path)
     image_name = image_path.split('/')[-1].split('.')[0]
     height, width, _ = image.shape
 
@@ -47,11 +48,10 @@ def split_image(image_path:str, save_path:str, patch_height=256, patch_width=256
     # 保存小图
     for i, patch in enumerate(patches):
         # 保存小图
-        if i!= 0 and i!=12 and i!= 156 and i!=168:
-            cv2.imwrite(f"{save_path}/{image_name}_patch_{i}.png", patch)
+        # if i!= 0 and i!=12 and i!= 156 and i!=168:
+        cv2.imwrite(f"{save_path}/{image_name}_patch_{i}.ppm", patch)
 
 if __name__ == '__main__':
-    train_dataset = EyesDataset("data/eyes_selected", image_size=256, mode='train', point_num=1, mask_num=1, requires_name = False)
-    #adjust_image(image_path, patch_height=256, patch_width=256)
+    train_dataset = StareDataset("data/stare_selected", image_size=256, mode='train', point_num=1, mask_num=1, requires_name = False)
     for image_path in tqdm(train_dataset.label_paths):
-        split_image(image_path=image_path, save_path='data/eyes_patch/mask', patch_height=256, patch_width=256)
+        split_image(image_path=image_path, save_path='data/stare_patch/mask', patch_height=256, patch_width=256)

@@ -322,6 +322,7 @@ class MaskIoULoss(nn.Module):
         union = torch.sum(p) + torch.sum(ground_truth_mask) - intersection
         iou = (intersection + 1e-7) / (union + 1e-7)
         iou_loss = torch.mean((iou - pred_iou) ** 2)
+        # iou_loss = torch.mean(torch.abs(iou - pred_iou))
         return iou_loss
 
 
