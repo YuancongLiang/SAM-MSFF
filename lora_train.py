@@ -23,12 +23,12 @@ torch.manual_seed(3407)
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--work_dir", type=str, default="workdir", help="work dir")
-    parser.add_argument("--run_name", type=str, default="lora_nofocal", help="run model name")
+    parser.add_argument("--run_name", type=str, default="lora_patch", help="run model name")
     parser.add_argument("--epochs", type=int, default=90, help="number of epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="train batch size")
     parser.add_argument("--image_size", type=int, default=256, help="image_size")
     parser.add_argument("--mask_num", type=int, default=5, help="get mask number")
-    parser.add_argument("--data_path", type=str, default="data/eyes", help="train data path") 
+    parser.add_argument("--data_path", type=str, default="data/eyes_patch", help="train data path") 
     parser.add_argument("--metrics", nargs='+', default=['iou', 'dice'], help="metrics")
     parser.add_argument('--device', type=str, default='cuda:1')
     parser.add_argument("--lr", type=float, default=1e-8, help="learning rate")
@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument("--point_list", type=list, default=[1, 3, 5, 9], help="point_list")
     parser.add_argument("--multimask", type=bool, default=True, help="ouput multimask")
     parser.add_argument("--encoder_adapter", type=bool, default=True, help="use adapter")
-    parser.add_argument("--workers", type=int, default=4, help="amount of workers")
+    parser.add_argument("--workers", type=int, default=0, help="amount of workers")
     args = parser.parse_args()
     if args.resume is not None:
         args.sam_checkpoint = None
@@ -144,7 +144,7 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
             print(f'Epoch: {epoch+1}, Batch: {batch+1}, first mask prompt: {SegMetrics(masks, labels, args.metrics)}')
 
         point_num = random.choice(args.point_list)
-        batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
+        # batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
         batched_input = setting_prompt_none(batched_input)
         # 如果我们对血管进行分割，是不应该有点提示的，这里应该将点提示删掉
         batched_input = to_device(batched_input, args.device)
@@ -165,10 +165,10 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
             loss.backward(retain_graph=True)
             optimizer.step()
             optimizer.zero_grad()
-            if iter != args.iter_point - 1:
-                point_num = random.choice(args.point_list)
-                batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
-                batched_input = to_device(batched_input, args.device)
+            # if iter != args.iter_point - 1:
+            #     point_num = random.choice(args.point_list)
+            #     batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
+            #     batched_input = to_device(batched_input, args.device)
            
             if int(batch+1) % 50 == 0:
                 if iter == init_mask_num or iter == args.iter_point - 1:
@@ -213,7 +213,7 @@ if __name__ == '__main__':
     lora_sam = LoRA_Sam(sam,r = 16).to(args.device)
     optimizer = optim.AdamW(filter(lambda p: p.requires_grad, lora_sam.sam.parameters()), lr=args.lr)
     # optimizer = optim.AdamW(filter(lambda p: p.requires_grad, sam.parameters()), lr=args.lr)
-    criterion = FocalDiceloss_IoULoss(weight=0.0)
+    criterion = FocalDiceloss_IoULoss(weight=3.0)
     # criterion = soft_dice_cldice()
     # criterion = soft_add_focal_cldice()
     # criterion = GC_2D(lmda=1)

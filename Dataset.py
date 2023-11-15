@@ -243,22 +243,22 @@ class EyesDataset(Dataset):
             augments = transforms(image=image, mask=pre_mask)
             image_tensor, mask_tensor = augments['image'], augments['mask'].to(torch.int64)
 
-            boxes = get_boxes_from_mask(mask_tensor)
+            # boxes = get_boxes_from_mask(mask_tensor)
             point_coords, point_label = init_point_sampling(mask_tensor, self.point_num)
 
             masks_list.append(mask_tensor)
-            boxes_list.append(boxes)
+            # boxes_list.append(boxes)
             point_coords_list.append(point_coords)
             point_labels_list.append(point_label)
 
         mask = torch.stack(masks_list, dim=0)
-        boxes = torch.stack(boxes_list, dim=0)
+        # boxes = torch.stack(boxes_list, dim=0)
         point_coords = torch.stack(point_coords_list, dim=0)
         point_labels = torch.stack(point_labels_list, dim=0)
 
         image_input["image"] = image_tensor.unsqueeze(0)
         image_input["label"] = mask.unsqueeze(1)
-        image_input["boxes"] = boxes
+        #image_input["boxes"] = boxes
         image_input["point_coords"] = point_coords
         image_input["point_labels"] = point_labels
 
@@ -395,12 +395,16 @@ def stack_dict_batched(batched_input):
 
 
 if __name__ == "__main__":
-    train_dataset = TrainingDataset("data_demo", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
-    print("Dataset:", len(train_dataset))
-    eyes_dataset = EyesDataset("data/eyes", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
-    eyes_dataset.get_mean_std()
-    train_batch_sampler = DataLoader(dataset=train_dataset, batch_size=2, shuffle=True, num_workers=4)
-    for i, batched_image in enumerate(tqdm(train_batch_sampler)):
-        batched_image = stack_dict_batched(batched_image)
-        print(batched_image["image"].shape, batched_image["label"].shape)
+    # train_dataset = TrainingDataset("data_demo", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
+    # print("Dataset:", len(train_dataset))
+    eyes_dataset = EyesDataset("data/eyes_patch", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
+    train_loader = DataLoader(eyes_dataset, batch_size = 64, shuffle=True, num_workers=0)
+    for i in range(10):
+        print(eyes_dataset[i])
+    # for batch, batched_input in enumerate(train_loader):
+    #     print(batched_input)
+    # train_batch_sampler = DataLoader(dataset=train_dataset, batch_size=2, shuffle=True, num_workers=4)
+    # for i, batched_image in enumerate(tqdm(train_batch_sampler)):
+    #     batched_image = stack_dict_batched(batched_image)
+    #     print(batched_image["image"].shape, batched_image["label"].shape)
 
