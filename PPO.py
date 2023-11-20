@@ -88,35 +88,56 @@ class RewardModel(nn.Module):
 class GAE(nn.Module):
     pass
 
+class PPO:
+    def __init__(self, action_model,value_model,reward_model,reference_model, actor_lr, critic_lr,gamma, device):
+        self.action_model = action_model
+        self.value_model = value_model
+        self.reward_model = reward_model
+        self.reference_model = reference_model
+        # PPO的四个模型
+        # 只有action和value模型需要训练
+        self.actor_optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, action_model.parameters()), actor_lr)
+        self.critic_optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, value_model.parameters()), critic_lr)
+        # 优化器导入完成
+        self.gamma = gamma
+    def update(self,state):
+        reference_mask, _ = reference_model(state)
+        action_mask, _ = action_model(state)
+        _, value = value_model(state)
+        kl_divergence = F.kl_div(torch.log(action_mask), reference_mask, reduction='sum')
+        reward = self.reward_model(state)
+
+        ratio = action_mask / reference_mask
+        
+
 if __name__ == '__main__':
     args = parse_args()
-    sam = sam_model_registry[args.model_type](args)
-    lora_sam = LoRA_Sam(sam,r = 16).to(args.device)
+    sam_action = sam_model_registry[args.model_type](args)
+    lora_sam_action = LoRA_Sam(sam_action,r = 16).to(args.device)
+
+    sam_value = sam_model_registry[args.model_type](args)
+    lora_sam_value = LoRA_Sam(sam_value,r = 16).to(args.device)
+
+    sam_reference = sam_model_registry[args.model_type](args)
+    lora_sam_reference = LoRA_Sam(sam_reference,r = 16).to(args.device)
+
     if args.resume is not None:
         with open(args.resume, "rb") as f:
             checkpoint = torch.load(f)
-            lora_sam.sam.load_state_dict(checkpoint['model'])
+            lora_sam_action.sam.load_state_dict(checkpoint['model'])
+            lora_sam_value.sam.load_state_dict(checkpoint['model'])
+            lora_sam_reference.sam.load_state_dict(checkpoint['model'])
             print(f"*******load {args.resume}")
-    action_model = ActionValueModel(lora_sam.sam)
+
+    action_model = ActionValueModel(lora_sam_action.sam)
     # 动作模型载入完成
-    sam = sam_model_registry[args.model_type](args)
-    lora_sam = LoRA_Sam(sam,r = 16).to(args.device)
-    if args.resume is not None:
-        with open(args.resume, "rb") as f:
-            checkpoint = torch.load(f)
-            lora_sam.sam.load_state_dict(checkpoint['model'])
-            print(f"*******load {args.resume}")
-    value_model = ActionValueModel(lora_sam.sam)
+    value_model = ActionValueModel(lora_sam_value.sam)
     # 价值模型载入完成
-    sam = sam_model_registry[args.model_type](args)
-    lora_sam = LoRA_Sam(sam,r = 16).to(args.device)
-    if args.resume is not None:
-        with open(args.resume, "rb") as f:
-            checkpoint = torch.load(f)
-            lora_sam.sam.load_state_dict(checkpoint['model'])
-            print(f"*******load {args.resume}")
-    lora_sam.sam.eval()
-    reference_model = ActionValueModel(lora_sam.sam)    
+    lora_sam_reference.sam.eval()
+    reference_model = ActionValueModel(lora_sam_reference.sam)    
+    PPO_trainer = PPO(action_model=action_model, value_model=value_model, reward_model=None, 
+                      reference_model=reference_model, actor_lr=args.lr, critic_lr=args.lr, 
+                      gamma=args.gamma, device=args.device)
     # 参考模型载入完成
     # train_dataset = EyesDataset("data/eyes", image_size=256, mode='test', requires_name=False, point_num=1, mask_num=1)
     # train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=args.workers)
