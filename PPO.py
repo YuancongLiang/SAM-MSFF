@@ -108,7 +108,16 @@ if __name__ == '__main__':
             print(f"*******load {args.resume}")
     value_model = ActionValueModel(lora_sam.sam)
     # 价值模型载入完成
-    
+    sam = sam_model_registry[args.model_type](args)
+    lora_sam = LoRA_Sam(sam,r = 16).to(args.device)
+    if args.resume is not None:
+        with open(args.resume, "rb") as f:
+            checkpoint = torch.load(f)
+            lora_sam.sam.load_state_dict(checkpoint['model'])
+            print(f"*******load {args.resume}")
+    lora_sam.sam.eval()
+    reference_model = ActionValueModel(lora_sam.sam)    
+    # 参考模型载入完成
     # train_dataset = EyesDataset("data/eyes", image_size=256, mode='test', requires_name=False, point_num=1, mask_num=1)
     # train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=args.workers)
     # action_model = ActionValueModel(lora_sam.sam)
