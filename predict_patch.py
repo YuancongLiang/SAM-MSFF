@@ -158,8 +158,9 @@ device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 args = argparse.Namespace()
 args.image_size = 256
 args.encoder_adapter = True
-# args.sam_checkpoint = "workdir/models/fives_patch/epoch2_sam.pth"
-args.sam_checkpoint = "workdir/models/stare_chasedb1_patch/epoch20_sam.pth"
+# args.sam_checkpoint = "workdir/models/lora_patch/epoch7_sam.pth"
+args.sam_checkpoint = "workdir/models/fives_patch/epoch2_sam.pth"
+# args.sam_checkpoint = "workdir/models/stare_chasedb1_patch/epoch30_sam.pth"
 # 开始载入模型
 model = sam_model_registry["vit_b"](args)
 lora_sam = LoRA_Sam(model,16).to(device)
@@ -186,19 +187,19 @@ print('the predicted iou is ' + str(predicted_iou))
 print('the iou is ' + str(calculate_iou(mask_truth, predicted_mask)))
 print('the dice is ' + str(calculate_dice_score(mask_truth, predicted_mask)))
 print('the acc is ' + str(calculate_acc(mask_truth, predicted_mask)))
-cv2.imwrite('3_A_predicted.png', predicted_mask*255)
+cv2.imwrite('3_A_mask_predicted.png', predicted_mask*255)
 
 # dataset = StareDataset("data/stare", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=1)
 # dataset = Chasedb1Dataset("data/chasedb1", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=1)
 # dataset = FivesDataset("data/FIVES", image_size=256, mode='test', requires_name=True, point_num=1, mask_num=1)
 # dataset = DriveDataset("data/drive", image_size=256, mode='test', requires_name=True, point_num=1, mask_num=1)
-dataset = EyesDataset("data/eyes_all", image_size=256, mode='test', requires_name=True, point_num=1, mask_num=1)
-print('start to predict dataset')
-for index, image_path in enumerate(tqdm(dataset.image_paths)):
-    image = cv2.imread(image_path)
-    image_processor.set_original_image(image)
-    predicted_mask, predicted_iou= image_processor.predict()
-    cv2.imwrite(image_path.replace('image/','mask/Result_').replace('jpg','png'),predicted_mask*255)
+# dataset = EyesDataset("data/eyes_all", image_size=256, mode='test', requires_name=True, point_num=1, mask_num=1)
+# print('start to predict dataset')
+# for index, image_path in enumerate(tqdm(dataset.image_paths)):
+#     image = cv2.imread(image_path)
+#     image_processor.set_original_image(image)
+#     predicted_mask, predicted_iou= image_processor.predict()
+#     cv2.imwrite(image_path.replace('image/','mask/Result_').replace('jpg','png'),predicted_mask*255)
 # iou_list = []
 # dice_list = []
 # acc_list = []
