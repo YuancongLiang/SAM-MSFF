@@ -12,7 +12,7 @@ from tqdm import tqdm
 from utils import train_transforms, get_boxes_from_mask, init_point_sampling
 import json
 import random
-
+from PIL import Image
 
 class TestingDataset(Dataset):
     
@@ -306,7 +306,9 @@ class DriveDataset(Dataset):
         self.pixel_std = [25.18, 45.48, 84.57]
         image_name = os.listdir(os.path.join(data_dir, mode, 'images'))
         self.image_paths = [os.path.join(data_dir, mode, 'images', i) for i in image_name if i.endswith('tif')]
-        self.label_paths = [i.replace('images','1st_manual').replace('training.tif','manual1.gif') for i in self.image_paths]
+        label_name = os.listdir(os.path.join(data_dir, mode, '1st_manual'))
+        self.label_paths = [os.path.join(data_dir, mode, '1st_manual', i) for i in label_name if i.endswith('gif')]
+        #self.label_paths = [i.replace('images','1st_manual').replace('training.tif','manual1.gif') for i in self.image_paths]
     
     def __getitem__(self, index):
         """
@@ -334,9 +336,13 @@ class DriveDataset(Dataset):
         for _ in range(self.mask_num):
             mask_path.append(self.label_paths[index])
         for m in mask_path:
-            pre_mask = cv2.imread(m, 0)
-            if pre_mask.max() == 255:
-                pre_mask = pre_mask / 255
+            pre_mask = Image.open(m)
+            pre_mask = cv2.cvtColor(np.asarray(pre_mask), cv2.COLOR_RGB2BGR)
+            if pre_mask is not None:
+                if pre_mask.max() == 255:
+                    pre_mask = pre_mask / 255
+            else:
+                print(f"Failed to read image at {m}")
 
             augments = transforms(image=image, mask=pre_mask)
             image_tensor, mask_tensor = augments['image'], augments['mask'].to(torch.int64)
@@ -694,11 +700,12 @@ if __name__ == "__main__":
     # print("Dataset:", len(train_dataset))
     # eyes_dataset = EyesDataset("data/eyes_selected", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
     # eyes_dataset = FivesDataset("data/FIVES", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
-    # eyes_dataset = DriveDataset("data/drive", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
-    eyes_dataset = Chasedb1Dataset("data/chasedb1_patch", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
+    eyes_dataset = DriveDataset("data\\drive", image_size=256, mode='training', requires_name=True, point_num=1, mask_num=5)
+    # eyes_dataset = Chasedb1Dataset("data/chasedb1_patch", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
     # eyes_dataset = StareDataset("data/stare", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
     # train_loader = DataLoader(eyes_dataset, batch_size = 64, shuffle=True, num_workers=0)
     print(eyes_dataset.label_paths)
+    eyes_dataset
     # for batch, batched_input in enumerate(train_loader):
     #     print(batched_input)
     # train_batch_sampler = DataLoader(dataset=train_dataset, batch_size=2, shuffle=True, num_workers=4)
