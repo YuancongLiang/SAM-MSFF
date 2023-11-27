@@ -7,7 +7,7 @@ import numpy as np
 from sam_lora import LoRA_Sam
 
 # 设置一些参数，包括模型的路径
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 args = argparse.Namespace()
 args.image_size = 256
 args.encoder_adapter = True
