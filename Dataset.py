@@ -688,6 +688,64 @@ def stack_dict_batched(batched_input):
             out_dict[k] = v.reshape(-1, *v.shape[2:])
     return out_dict
 
+class FivesPPO(Dataset):
+    def __init__(self, data_dir, image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5):
+        self.image_size = image_size
+        self.requires_name = requires_name
+        self.point_num = point_num
+        self.mask_num = mask_num
+        self.pixel_mean = [16.20, 38.92, 86.11]
+        self.pixel_std = [10.52, 26.44, 54.57]
+        image_name = os.listdir(os.path.join(data_dir, mode ,'Original'))
+        self.image_paths = [os.path.join(data_dir, mode ,'Original',i) for i in image_name if i.endswith('png')]
+        self.label_paths = [i.replace('Original','Ground truth') for i in self.image_paths]
+    
+    def pad_and_crop(self, image, patch_height=256, patch_width=256):
+
+        height, width, _ = image.shape
+
+        # 计算需要填充的像素数量
+        pad_height = (patch_height - (height % patch_height))% patch_height
+        pad_width = (patch_width - (width % patch_width))% patch_width
+
+        # 进行填充操作
+        padded_image = cv2.copyMakeBorder(image, pad_height // 2, pad_height - (pad_height // 2), 
+                                        pad_width // 2, pad_width - (pad_width // 2), 
+                                        cv2.BORDER_CONSTANT, value=[0, 0, 0])
+        if padded_image.shape != (2048,2048,3):
+            padded_image = np.reshape(padded_image, (padded_image.shape[0], padded_image.shape[1], 1))
+        cropped_images = []
+        for i in range(0, height + pad_height, 256):
+            for j in range(0, width + pad_width, 256):
+                cropped_images.append(padded_image[i:i+256, j:j+256, :])
+        return cropped_images
+
+    def __getitem__(self, index):
+        image_input = {}
+        try:
+            image = cv2.imread(self.image_paths[index])
+            image = (image - self.pixel_mean) / self.pixel_std
+        except:
+            print(self.image_paths[index])
+        image_list = np.array(self.pad_and_crop(image))
+        mask = cv2.imread(self.label_paths[index], 0)
+        if mask.max() == 255:
+            mask = mask / 255
+            mask = mask[:,:,np.newaxis]
+        
+        mask_list = np.array(self.pad_and_crop(mask))
+        image_input["image"] = torch.tensor(image_list, dtype=torch.float32)
+        image_input["label"] = torch.tensor(mask_list, dtype=torch.float32)
+
+        image_name = self.image_paths[index].split('/')[-1]
+        if self.requires_name:
+            image_input["name"] = image_name
+            return image_input
+        else:
+            return image_input
+    def __len__(self):
+        return len(self.image_paths)
+
 
 if __name__ == "__main__":
     # train_dataset = TrainingDataset("data_demo", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
@@ -695,10 +753,11 @@ if __name__ == "__main__":
     # eyes_dataset = EyesDataset("data/eyes_selected", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
     # eyes_dataset = FivesDataset("data/FIVES", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
     # eyes_dataset = DriveDataset("data/drive", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
-    eyes_dataset = Chasedb1Dataset("data/chasedb1_patch", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
+    # eyes_dataset = Chasedb1Dataset("data/chasedb1_patch", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
     # eyes_dataset = StareDataset("data/stare", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
     # train_loader = DataLoader(eyes_dataset, batch_size = 64, shuffle=True, num_workers=0)
-    print(eyes_dataset.label_paths)
+    eyes_dataset = FivesPPO("data/FIVES", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=5)
+    print(eyes_dataset[0])
     # for batch, batched_input in enumerate(train_loader):
     #     print(batched_input)
     # train_batch_sampler = DataLoader(dataset=train_dataset, batch_size=2, shuffle=True, num_workers=4)
