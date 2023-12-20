@@ -6,6 +6,8 @@ from sam_lora import LoRA_Sam
 from segment_anything import sam_model_registry
 import cv2
 import os
+import datetime
+from utils import get_logger
 from Dataset import EyesDataset, stack_dict_batched, FivesDataset, StareDataset, Chasedb1Dataset, FivesPPO
 from tqdm import tqdm
 import torch.nn as nn
@@ -117,7 +119,7 @@ class PPO:
         self.device = device
         self.beta = beta
         self.limit = limit
-        self.epsilon = 1e-5
+        self.epsilon = 1e-2
     def compute_advantage(self, td_delta):
         td_delta = td_delta.detach().cpu().numpy()
         advantage_list = []
@@ -139,21 +141,20 @@ class PPO:
         value_next = torch.cat((value[1:], torch.tensor([[0.]], device=self.device)), dim=0)
         td_target = reward + self.gamma * value_next
         td_delta = td_target - value
-        advantage = self.compute_advantage(td_delta).unsqueeze(1).unsqueeze(1).expand(len(td_delta), 1, 256, 256)
+        advantage = self.compute_advantage(td_delta).mean()
         if advantage.mean() < self.limit/1.5:
             self.beta = self.beta * 2
         elif advantage.mean() > self.limit*1.5:
             self.beta = self.beta / 2
         else:
             pass
-        for _ in range(self.epochs):
+        for epoch in range(self.epochs):
             action_mask, _ = self.action_model(state)
-            ratio = ((action_mask + 1e-7) / (old_action_mask + 1e-7))
+            ratio = ((action_mask + 1e-7) / (old_action_mask + 1e-7)).mean()
             # 截断算法
             actor_loss = -torch.min((-ratio * advantage).squeeze(), torch.clamp(ratio, 1-self.epsilon, 1+self.epsilon) * advantage).mean()
             # KL散度惩罚
             # actor_loss = torch.mean((-ratio * advantage).squeeze())+ self.beta * kl_divergence
-            print(actor_loss)
             _, value = self.value_model(state)
             critic_loss = torch.mean(F.mse_loss(value, td_target.detach()))
             self.actor_optimizer.zero_grad()
@@ -162,6 +163,7 @@ class PPO:
             critic_loss.backward()
             self.actor_optimizer.step()
             self.critic_optimizer.step()
+            loggers.info(f"epoch: {epoch + 1}, critic_loss: {critic_loss:.4f}, actor loss: {actor_loss:.4f}")
 def pad_and_crop(image, patch_height=256, patch_width=256):
 
     _, height, width = image.shape
@@ -217,8 +219,8 @@ if __name__ == '__main__':
     train_dataset = FivesPPO("data/FIVES", image_size=256, mode='train', requires_name=False, point_num=1, mask_num=1)
     train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=args.workers)
     for batched_input in tqdm(train_loader):
-        image_list = batched_input["image"].to(args.device).squeeze(0).permute(0, 3, 1, 2)[:2]
-        label_list = batched_input["label"].to(args.device).squeeze(0).permute(0, 3, 1, 2)[:2]
+        image_list = batched_input["image"].to(args.device).squeeze(0).permute(0, 3, 1, 2)
+        label_list = batched_input["label"].to(args.device).squeeze(0).permute(0, 3, 1, 2)
 
         # image = batched_input["image"][0]
         # label = batched_input["label"][0]
@@ -228,3 +230,4 @@ if __name__ == '__main__':
         # image_list = torch.tensor(np.array([image.cpu().detach().numpy() for image in image_list])).to(args.device)
         # label_list = torch.tensor(np.array([label.cpu().detach().numpy() for label in label_list])).to(args.device)
         PPO_trainer.update(image_list, label_list)
+        loggers = get_logger(os.path.join(args.work_dir, "logs", f"{args.run_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M.log')}"))
