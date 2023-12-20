@@ -129,7 +129,7 @@ class PPO:
             advantage_list.append(advantage)
         advantage_list.reverse()
         return torch.tensor(np.array(advantage_list), dtype=torch.float).to(self.device)
-    def update(self, state, ground_truth):
+    def update(self, state, ground_truth, loggers):
         #reference_mask, _ = self.reference_model(state)
         action_mask, _ = self.action_model(state)
         _, value = self.value_model(state)
@@ -219,8 +219,8 @@ if __name__ == '__main__':
     train_dataset = FivesPPO("data/FIVES", image_size=256, mode='train', requires_name=False, point_num=1, mask_num=1)
     train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=args.workers)
     for batched_input in tqdm(train_loader):
-        image_list = batched_input["image"].to(args.device).squeeze(0).permute(0, 3, 1, 2)
-        label_list = batched_input["label"].to(args.device).squeeze(0).permute(0, 3, 1, 2)
+        image_list = batched_input["image"].to(args.device).squeeze(0).permute(0, 3, 1, 2)[:2]
+        label_list = batched_input["label"].to(args.device).squeeze(0).permute(0, 3, 1, 2)[:2]
 
         # image = batched_input["image"][0]
         # label = batched_input["label"][0]
@@ -229,5 +229,5 @@ if __name__ == '__main__':
         # label_list = pad_and_crop(label)
         # image_list = torch.tensor(np.array([image.cpu().detach().numpy() for image in image_list])).to(args.device)
         # label_list = torch.tensor(np.array([label.cpu().detach().numpy() for label in label_list])).to(args.device)
-        PPO_trainer.update(image_list, label_list)
         loggers = get_logger(os.path.join(args.work_dir, "logs", f"{args.run_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M.log')}"))
+        PPO_trainer.update(image_list, label_list, loggers)
