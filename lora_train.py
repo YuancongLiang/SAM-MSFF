@@ -14,17 +14,17 @@ from torch.utils.data import DataLoader
 from Dataset import TrainingDataset, stack_dict_batched, StareDataset, EyesDataset, FivesDataset, Chasedb1Dataset
 from torch import optim
 from graph_cuts_loss.graph_cuts_loss import GC_2D
-from utils import FocalDiceloss_IoULoss, get_logger, generate_point, setting_prompt_none
+from utils import FocalDiceloss_IoULoss, get_logger, generate_point, setting_prompt_none, IoULoss, WeightDiceLoss
 import argparse
 from tqdm import tqdm
 from metrics import SegMetrics
 import random
 from torch.nn import functional as F
-torch.manual_seed(3407)
+# torch.manual_seed(3407)
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--work_dir", type=str, default="workdir", help="work dir")
-    parser.add_argument("--run_name", type=str, default="stare_chasedb1_patch", help="run model name")
+    parser.add_argument("--run_name", type=str, default="new_lora", help="run model name")
     parser.add_argument("--epochs", type=int, default=40, help="number of epochs")
     parser.add_argument("--batch_size", type=int, default=80, help="train batch size")
     parser.add_argument("--image_size", type=int, default=256, help="image_size")
@@ -32,11 +32,11 @@ def parse_args():
     parser.add_argument("--data_path", type=str, default="data/fives_patch", help="train data path") 
     parser.add_argument("--metrics", nargs='+', default=['iou', 'dice'], help="metrics")
     parser.add_argument('--device', type=str, default='cuda:1')
-    parser.add_argument("--lr", type=float, default=1e-9, help="learning rate")
-    parser.add_argument("--resume", type=str, default='/home/liangyuancong/SAM-Med2D/pretrain_model/fives_patch_past.pth', help="load resume") 
+    parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
+    parser.add_argument("--resume", type=str, default=None, help="load resume") 
     parser.add_argument("--model_type", type=str, default="vit_b", help="sam model_type")
     parser.add_argument("--sam_checkpoint", type=str, default="pretrain_model/pretrained_lora.pth", help="sam checkpoint")
-    parser.add_argument("--iter_point", type=int, default=8, help="point iterations")
+    parser.add_argument("--iter_point", type=int, default=6, help="point iterations")
     parser.add_argument('--lr_scheduler', type=str, default=True, help='lr scheduler')
     parser.add_argument("--point_list", type=list, default=[1, 3, 5, 9], help="point_list")
     parser.add_argument("--multimask", type=bool, default=True, help="ouput multimask")
@@ -106,7 +106,38 @@ def prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_ite
     masks = F.interpolate(low_res_masks,(args.image_size, args.image_size), mode="bilinear", align_corners=False,)
     return masks, low_res_masks, iou_predictions
 
+@torch.no_grad()
+def val_one_epoch(args, model, optimizer, val_loader, epoch, criterion):
+    print("start to validate")
+    val_loader = tqdm(val_loader)
+    val_losses = []
+    model.eval()
+    for batch, batched_input in enumerate(val_loader):
+        
+        batched_input = stack_dict_batched(batched_input)
+        batched_input = to_device(batched_input, args.device)
+        labels = batched_input["label"]
+        image_embeddings = model.image_encoder(batched_input["image"])
+        batch, _, _, _ = image_embeddings.shape
+        image_embeddings_repeat = []
+        for i in range(batch):
+            image_embed = image_embeddings[i]
+            image_embed = image_embed.repeat(args.mask_num, 1, 1, 1)
+            image_embeddings_repeat.append(image_embed)
+        image_embeddings = torch.cat(image_embeddings_repeat, dim=0)
+
+        masks, low_res_masks, iou_predictions = prompt_and_decoder(args, batched_input, model, image_embeddings, decoder_iter = False)
+        loss = criterion(masks, labels, iou_predictions)
+        val_losses.append(loss.item())
+        gpu_info = {}
+        gpu_info['gpu_name'] = args.device 
+        val_loader.set_postfix(val_loss=loss.item(), gpu_info=gpu_info)
+
+    return val_losses
+
+
 def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
+    model.train()
     train_loader = tqdm(train_loader)
     train_losses = []
     
@@ -115,9 +146,10 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
         batched_input = stack_dict_batched(batched_input)
         batched_input = to_device(batched_input, args.device)
         # 冻结除了lora层以外的参数
-        # for n, value in model.sam.image_encoder.named_parameters():
         for n, value in model.image_encoder.named_parameters():
-            if "qkv" in n:
+            if "linear_" in n:
+                value.requires_grad = True
+            elif "qkv.qkv.bias" in n:
                 value.requires_grad = True
             else:
                 value.requires_grad = False
@@ -166,10 +198,6 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
             loss.backward(retain_graph=True)
             optimizer.step()
             optimizer.zero_grad()
-            # if iter != args.iter_point - 1:
-            #     point_num = random.choice(args.point_list)
-            #     batched_input = generate_point(masks, labels, low_res_masks, batched_input, point_num)
-            #     batched_input = to_device(batched_input, args.device)
            
             if int(batch+1) % 50 == 0:
                 if iter == init_mask_num or iter == args.iter_point - 1:
@@ -186,47 +214,42 @@ def train_one_epoch(args, model, optimizer, train_loader, epoch, criterion):
 
             gpu_info = {}
             gpu_info['gpu_name'] = args.device 
-            train_loader.set_postfix(train_loss=loss.item(), gpu_info=gpu_info)
+            
 
             train_batch_metrics = SegMetrics(masks, labels, args.metrics)
             train_iter_metrics = [train_iter_metrics[i] + train_batch_metrics[i] for i in range(len(args.metrics))]
+        train_loader.set_postfix(train_loss=loss.item(), gpu_info=gpu_info)
     return train_losses, train_iter_metrics
 
 if __name__ == '__main__':
     args = parse_args()
     sam = sam_model_registry[args.model_type](args)
-
-    # qlora_sam = AutoModelForCausalLM.from_pretrained(
-    #     pretrained_model_name_or_path=sam,
-    #     load_in_4bit=True,
-    #     device_map='auto',
-    #     torch_dtype=torch.bfloat16,
-    #     quantization_config=BitsAndBytesConfig(
-    #         load_in_4bit=True,
-    #         bnb_4bit_compute_dtype=torch.bfloat16,
-    #         bnb_4bit_use_double_quant=True,
-    #         bnb_4bit_quant_type='nf4'
-    #     )
-    # )
-    # print(qlora_sam)
-
-
-    lora_sam = LoRA_Sam(sam,r = 16).to(args.device)
+    with open("pretrain_model/sam-med2d_b.pth","rb") as f:
+        checkpoint = torch.load(f,map_location='cpu')
+        sam.load_state_dict(checkpoint, strict=False)
+    lora_sam = LoRA_Sam(sam,r = 64).to(args.device)
     optimizer = optim.AdamW(filter(lambda p: p.requires_grad, lora_sam.sam.parameters()), lr=args.lr)
     # optimizer = optim.AdamW(filter(lambda p: p.requires_grad, sam.parameters()), lr=args.lr)
-    criterion = FocalDiceloss_IoULoss(weight=0.0)
+    criterion = FocalDiceloss_IoULoss(weight=3,iou_scale=0)
+    # criterion = WeightDiceLoss()
     # criterion = soft_dice_cldice()
     # criterion = soft_add_focal_cldice()
     # criterion = GC_2D(lmda=1)
+    seed = torch.initial_seed()
+    print("Torch随机种子:", seed)
     if args.lr_scheduler:
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[5, 10], gamma = 0.5)
         print('*******Use MultiStepLR')
-    # args.resume这段未测试过
     if args.resume is not None:
         with open(args.resume, "rb") as f:
             checkpoint = torch.load(f)
-            lora_sam.sam.load_state_dict(checkpoint['model'])
-            # sam.load_state_dict(checkpoint['model'])
+            selected_weights = {}
+            for name, weight in checkpoint['model'].items():
+                if 'linear_' in name:
+                    selected_weights[name] = weight
+                if 'qkv.qkv.bias' in name:
+                    selected_weights[name] = weight
+            lora_sam.sam.load_state_dict(selected_weights, strict=False)
             optimizer.load_state_dict(checkpoint['optimizer'].state_dict())
             print(f"*******load {args.resume}")
     train_dataset1 = StareDataset("data/stare_patch", image_size=256, mode='train', requires_name=False, point_num=1, mask_num=args.mask_num)
@@ -235,9 +258,11 @@ if __name__ == '__main__':
     #train_dataset = EyesDataset(args.data_path, image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
     #train_dataset = StareDataset('data/stare', image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
     #train_dataset = TrainingDataset('data_demo', image_size=args.image_size, mode='train', point_num=1, mask_num=args.mask_num, requires_name = False)
-    train_dataset = ConcatDataset([train_dataset1,train_dataset2])
-    train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=args.workers)
-    print('*******Train data:', len(train_dataset))
+    train_dataset = ConcatDataset([train_dataset1,train_dataset2,train_dataset3])
+    train_loader = DataLoader(train_dataset3, batch_size = args.batch_size, shuffle=True, num_workers=args.workers)
+    val_dataset = FivesDataset(args.data_path, image_size=args.image_size, mode='test', point_num=1, mask_num=args.mask_num, requires_name = False)
+    val_loader = DataLoader(val_dataset, batch_size = 49, shuffle=False, num_workers=args.workers)
+    print('*******Train data:', len(train_dataset3))
     loggers = get_logger(os.path.join(args.work_dir, "logs", f"{args.run_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M.log')}"))
 
     best_loss = 1e10
@@ -245,28 +270,23 @@ if __name__ == '__main__':
     
     for epoch in range(0, args.epochs):
         lora_sam.sam.train()
-        # sam.train()
         train_metrics = {}
         start = time.time()
         os.makedirs(os.path.join(f"{args.work_dir}/models", args.run_name), exist_ok=True)
         train_losses, train_iter_metrics = train_one_epoch(args, lora_sam.sam, optimizer, train_loader, epoch, criterion)
-        # train_losses, train_iter_metrics = train_one_epoch(args, sam, optimizer, train_loader, epoch, criterion)
+        val_losses = val_one_epoch(args, lora_sam.sam, optimizer, val_loader, epoch, criterion)
         if args.lr_scheduler is not None:
             scheduler.step()
         train_iter_metrics = [metric / l for metric in train_iter_metrics]
         train_metrics = {args.metrics[i]: '{:.4f}'.format(train_iter_metrics[i]) for i in range(len(train_iter_metrics))}
 
         average_loss = np.mean(train_losses)
+        average_val_loss = np.mean(val_losses)
         lr = scheduler.get_last_lr()[0] if args.lr_scheduler is not None else args.lr
-        loggers.info(f"epoch: {epoch + 1}, lr: {lr}, Train loss: {average_loss:.4f}, metrics: {train_metrics}")
-
-        if average_loss < best_loss:
-            best_loss = average_loss
-            save_path = os.path.join(args.work_dir, "models", args.run_name, f"epoch{epoch+1}_sam.pth")
-            state = {'model': lora_sam.sam.float().state_dict(), 'optimizer': optimizer}
-            
-            # state = {'model': sam.float().state_dict(), 'optimizer': optimizer}
-            torch.save(state, save_path)
+        loggers.info(f"epoch: {epoch + 1}, lr: {lr}, Train loss: {average_loss:.4f}, metrics: {train_metrics},Val loss:{average_val_loss:.4f}")
+        save_path = os.path.join(args.work_dir, "models", args.run_name, f"epoch{epoch+1}_sam.pth")
+        state = {'model': lora_sam.sam.float().state_dict(), 'optimizer': optimizer}
+        torch.save(state, save_path)
 
         end = time.time()
         print("Run epoch time: %.2fs" % (end - start))

@@ -8,6 +8,7 @@ from Dataset import StareDataset, FivesDataset, Chasedb1Dataset, DriveDataset, E
 from sam_lora import LoRA_Sam
 from math import ceil
 from tqdm import tqdm
+import torch.nn as nn
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -20,6 +21,13 @@ def calculate_iou(true_mask, predicted_mask) -> np.ndarray:
     union = np.logical_or(true_mask, predicted_mask)
     iou = np.sum(intersection) / np.sum(union)
     return iou
+
+def calculate_f1score(true_mask, predicted_mask) -> np.ndarray:
+    intersection = np.logical_and(true_mask, predicted_mask)
+    precision = np.sum(intersection) / np.sum(predicted_mask)
+    recall = np.sum(intersection) / np.sum(true_mask)
+    f1score = 2 * precision * recall / (precision + recall)
+    return f1score
 
 def calculate_dice_score(true_mask, predicted_mask) -> np.ndarray:
     intersection = np.logical_and(true_mask, predicted_mask)
@@ -158,9 +166,14 @@ device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 args = argparse.Namespace()
 args.image_size = 256
 args.encoder_adapter = True
-# args.sam_checkpoint = "workdir/models/lora_patch/epoch7_sam.pth"
-args.sam_checkpoint = "workdir/models/fives_patch/epoch2_sam.pth"
-# args.sam_checkpoint = "workdir/models/stare_chasedb1_patch/epoch30_sam.pth"
+# args.sam_checkpoint = "workdir/models/test/epoch1_sam.pth"
+# args.sam_checkpoint = "workdir/models/fives_patch/epoch4_sam.pth"
+# args.sam_checkpoint = "workdir/models/stare_chasedb1_patch/epoch12_sam.pth"
+# args.sam_checkpoint = "pretrain_model/fives_patch_past.pth"
+# args.sam_checkpoint = "pretrain_model/ppo_dice.pth"
+# args.sam_checkpoint = "pretrain_model/another_seed.pth"
+args.sam_checkpoint = "workdir/models/new_lora/epoch1_sam.pth"
+# args.sam_checkpoint = "workdir/models/weight_dice/epoch2_sam.pth"
 # 开始载入模型
 model = sam_model_registry["vit_b"](args)
 lora_sam = LoRA_Sam(model,16).to(device)
@@ -172,14 +185,15 @@ with open(args.sam_checkpoint, "rb") as f:
 lora_sam.sam.eval()
 predictor = SammedPredictor(lora_sam.sam)
 image_processor = ImageProcessing(predictor)
-
 image = cv2.imread('/home/liangyuancong/SAM-Med2D/3_A_origin.png')
 mask_truth = cv2.imread('/home/liangyuancong/SAM-Med2D/3_A_mask.png', cv2.IMREAD_GRAYSCALE)
-# image = cv2.imread('/home/liangyuancong/SAM-Med2D/im0001_image.jpg')
-# mask_truth = cv2.imread('/home/liangyuancong/SAM-Med2D/data/stare/mask/im0001.vk.ppm', cv2.IMREAD_GRAYSCALE)
+# image = cv2.imread('/home/liangyuancong/SAM-Med2D/data/FIVES/test/Original/16_A.png')
+# mask_truth = cv2.imread('/home/liangyuancong/SAM-Med2D/data/FIVES/test/Ground truth/16_A.png', cv2.IMREAD_GRAYSCALE)
 # image = cv2.imread('/home/liangyuancong/SAM-Med2D/data/chasedb1/Image_14L.jpg')
 # mask_truth = cv2.imread('/home/liangyuancong/SAM-Med2D/data/chasedb1/Image_14L_1stHO.png', cv2.IMREAD_GRAYSCALE)
-
+# kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))  
+# dilated_image = cv2.dilate(mask_truth, kernel) 
+# cv2.imwrite("dilated_image.png",dilated_image) 
 mask_truth = mask_truth/255
 image_processor.set_original_image(image)
 predicted_mask,predicted_iou = image_processor.predict()
@@ -188,34 +202,34 @@ print('the iou is ' + str(calculate_iou(mask_truth, predicted_mask)))
 print('the dice is ' + str(calculate_dice_score(mask_truth, predicted_mask)))
 print('the acc is ' + str(calculate_acc(mask_truth, predicted_mask)))
 cv2.imwrite('3_A_mask_predicted.png', predicted_mask*255)
-
 # dataset = StareDataset("data/stare", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=1)
 # dataset = Chasedb1Dataset("data/chasedb1", image_size=256, mode='train', requires_name=True, point_num=1, mask_num=1)
-# dataset = FivesDataset("data/FIVES", image_size=256, mode='test', requires_name=True, point_num=1, mask_num=1)
+dataset = FivesDataset("data/FIVES", image_size=256, mode='test', requires_name=True, point_num=1, mask_num=1)
 # dataset = DriveDataset("data/drive", image_size=256, mode='test', requires_name=True, point_num=1, mask_num=1)
 # dataset = EyesDataset("data/eyes_all", image_size=256, mode='test', requires_name=True, point_num=1, mask_num=1)
-# print('start to predict dataset')
+print('start to predict dataset')
 # for index, image_path in enumerate(tqdm(dataset.image_paths)):
 #     image = cv2.imread(image_path)
 #     image_processor.set_original_image(image)
 #     predicted_mask, predicted_iou= image_processor.predict()
 #     cv2.imwrite(image_path.replace('image/','mask/Result_').replace('jpg','png'),predicted_mask*255)
-# iou_list = []
-# dice_list = []
-# acc_list = []
-# for index, image_path in enumerate(dataset.image_paths):
-#     image = cv2.imread(image_path)
-#     image_processor.set_original_image(image)
-#     predicted_mask, predicted_iou = image_processor.predict()
-#     mask_truth = cv2.imread(dataset.label_paths[index], cv2.IMREAD_GRAYSCALE)
-#     mask_truth = mask_truth/255
-#     iou_list.append(calculate_iou(mask_truth, predicted_mask))
-#     dice_list.append(calculate_dice_score(mask_truth, predicted_mask))
-#     acc_list.append(calculate_acc(mask_truth, predicted_mask))
-#     print('the file name is:'+image_path.split('/')[-1])
-#     print('the iou is:'+str(iou_list[-1]))
-#     print('the dice score is:'+str(dice_list[-1]))
-#     print('the acc is:'+str(acc_list[-1]))
-# print('the mean iou is:'+str(np.mean(iou_list)))
-# print('the mean dice score is:'+str(np.mean(dice_list)))
-# print('the mean acc is:'+str(np.mean(acc_list)))
+
+iou_list = []
+dice_list = []
+acc_list = []
+for index, image_path in enumerate(dataset.image_paths):
+    image = cv2.imread(image_path)
+    image_processor.set_original_image(image)
+    predicted_mask, predicted_iou = image_processor.predict()
+    mask_truth = cv2.imread(dataset.label_paths[index], cv2.IMREAD_GRAYSCALE)
+    mask_truth = mask_truth/255
+    iou_list.append(calculate_iou(mask_truth, predicted_mask))
+    dice_list.append(calculate_dice_score(mask_truth, predicted_mask))
+    acc_list.append(calculate_acc(mask_truth, predicted_mask))
+    print('the file name is:'+image_path.split('/')[-1])
+    print('the iou is:'+str(iou_list[-1]))
+    print('the dice score is:'+str(dice_list[-1]))
+    print('the acc is:'+str(acc_list[-1]))
+print('the mean iou is:'+str(np.mean(iou_list)))
+print('the mean dice score is:'+str(np.mean(dice_list)))
+print('the mean acc is:'+str(np.mean(acc_list)))

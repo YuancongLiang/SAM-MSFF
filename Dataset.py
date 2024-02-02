@@ -172,7 +172,7 @@ class TrainingDataset(Dataset):
         boxes = torch.stack(boxes_list, dim=0)
         point_coords = torch.stack(point_coords_list, dim=0)
         point_labels = torch.stack(point_labels_list, dim=0)
-
+        
         image_input["image"] = image_tensor.unsqueeze(0)
         image_input["label"] = mask.unsqueeze(1)
         image_input["boxes"] = boxes

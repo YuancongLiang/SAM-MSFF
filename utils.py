@@ -284,6 +284,47 @@ class FocalLoss(nn.Module):
 
         return loss
 
+class WeightDiceLoss(nn.Module):
+    def __init__(self, smooth=1.0):
+        super(WeightDiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, pred, mask, ioupred):
+        """
+        pred: [B, 1, H, W]
+        mask: [B, 1, H, W]
+        """
+        assert pred.shape == mask.shape, "pred and mask should have the same shape."
+        p = torch.sigmoid(pred)
+        positive = [torch.nonzero(i).size(0) for i in mask]
+        positive_num = torch.tensor(positive).float().to(pred.device)
+        positive_sum = positive_num.sum()
+        ratio = (positive_num / positive_sum).detach()
+        intersection = torch.sum(p * mask, dim=(1, 2, 3))
+        union = torch.sum(p,dim=(1, 2, 3)) + torch.sum(mask,dim=(1, 2, 3))
+        dice_loss = (2.0 * intersection + self.smooth) / (union + self.smooth) * ratio
+        return 1 - dice_loss.sum()
+    
+class WholeDiceLoss(nn.Module):
+    def __init__(self, smooth=1.0):
+        super(WholeDiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, pred, mask, ioupred):
+        """
+        pred: [B, 1, H, W]
+        mask: [B, 1, H, W]
+        """
+        assert pred.shape == mask.shape, "pred and mask should have the same shape."
+        p = torch.sigmoid(pred)
+        positive = [torch.nonzero(i).size(0) for i in mask]
+        positive_num = torch.tensor(positive).float().to(pred.device)
+        positive_sum = positive_num.sum()
+        ratio = positive_num / positive_sum
+        intersection = torch.sum(p * mask, dim=(1, 2, 3))
+        union = torch.sum(p,dim=(1, 2, 3)) + torch.sum(mask,dim=(1, 2, 3))
+        dice_loss = (2.0 * intersection + self.smooth) / (union + self.smooth) * ratio
+        return 1 - dice_loss.sum()
 
 class DiceLoss(nn.Module):
     def __init__(self, smooth=1.0):
@@ -299,10 +340,26 @@ class DiceLoss(nn.Module):
         p = torch.sigmoid(pred)
         intersection = torch.sum(p * mask)
         union = torch.sum(p) + torch.sum(mask)
-        dice_loss = (2.0 * intersection + self.smooth) / (union + self.smooth)
-
+        dice_loss = (2.0 * intersection + self.smooth) / (union + self.smooth) 
         return 1 - dice_loss
 
+class IoULoss(nn.Module):
+    def __init__(self, smooth=1.0):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, pred, mask):
+        """
+        pred: [B, 1, H, W]
+        mask: [B, 1, H, W]
+        """
+        assert pred.shape == mask.shape, "pred and mask should have the same shape."
+        p = torch.sigmoid(pred)
+        intersection = torch.sum(p * mask)
+        union = torch.logical_or(p, mask).sum()
+        iou = (intersection + self.smooth) / (union + self.smooth)
+
+        return -torch.log(iou)
 
 class MaskIoULoss(nn.Module):
 

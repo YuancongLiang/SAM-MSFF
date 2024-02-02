@@ -38,7 +38,7 @@ def split_image(image_path:str, save_path:str, patch_height=256, patch_width=256
     height, width, _ = image.shape
 
     # 定义小图尺寸和步长
-    stride = patch_height//2
+    stride = patch_height // 2
     patches = []
     for y in range(0, height-stride, stride):
         for x in range(0, width-stride, stride):
@@ -49,9 +49,9 @@ def split_image(image_path:str, save_path:str, patch_height=256, patch_width=256
     for i, patch in enumerate(patches):
         # 保存小图
         # if i!= 0 and i!=12 and i!= 156 and i!=168:
-        cv2.imwrite(f"{save_path}/{image_name}_patch_{i}.ppm", patch)
+        cv2.imwrite(f"{save_path}/{image_name}_patch_{i}.png", patch)
 
 if __name__ == '__main__':
-    train_dataset = StareDataset("data/stare_selected", image_size=256, mode='train', point_num=1, mask_num=1, requires_name = False)
+    train_dataset = FivesDataset("data/FIVES", image_size=256, mode='test', point_num=1, mask_num=1, requires_name = False)
     for image_path in tqdm(train_dataset.label_paths):
-        split_image(image_path=image_path, save_path='data/stare_patch/mask', patch_height=256, patch_width=256)
+        split_image(image_path=image_path, save_path='data/fives_patch/test/Ground truth', patch_height=256, patch_width=256)
