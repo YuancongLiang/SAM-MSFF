@@ -7,11 +7,9 @@ $\text{SAM-MSF}^2$ is a fine-tuning model based on SAMMed2d, mainly designed for
 You can follow the steps below to install:
 
 1. Clone the project to your local machine using the following command:
-<!--
-   ```
-   git clone https://github.com/YuancongLiang/SAM-MSF2.git
-   ``` 
--->
+2. 
+ <!--  git clone https://github.com/YuancongLiang/SAM-MSF2.git -->
+
 2. Navigate to the project directory:
    ```
    cd SAM-MSF2
