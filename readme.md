@@ -1,4 +1,4 @@
-# Project Name
+# $\text{SAM-MSF}^2$
 
 $\text{SAM-MSF}^2$ is a fine-tuning model based on SAMMed2d, mainly designed for vascular segmentation.
 
