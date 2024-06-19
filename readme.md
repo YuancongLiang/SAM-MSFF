@@ -10,7 +10,11 @@ You can follow the steps below to install:
    ```
    git clone https://github.com/YuancongLiang/SAM-MSF2.git
    ```
-
+<!--
+   ```
+   git clone https://github.com/YuancongLiang/SAM-MSF2.git
+   ``` 
+-->
 2. Navigate to the project directory:
    ```
    cd SAM-MSF2
