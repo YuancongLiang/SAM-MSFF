@@ -68,4 +68,4 @@ If you would like to contribute to this project, please follow these steps:
 
 ## Copyright and License
 
-This project is licensed under the MIT License. For more details, please refer to the [LICENSE](LICENSE).
+This project is licensed under the Apache License. For more details, please refer to the [LICENSE](LICENSE).
