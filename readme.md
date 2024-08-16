@@ -34,6 +34,7 @@ Before that, you need to download the FIVES dataset, which is a high-quality dat
 wget https://s3-eu-west-1.amazonaws.com/pfigshare-u-files/34969398/FIVESAFundusImageDatasetforAIbasedVesselSegmentation.rar?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIYCQYOYV5JSSROOA/20240619/eu-west-1/s3/aws4_request&X-Amz-Date=20240619T120301Z&X-Amz-Expires=10&X-Amz-SignedHeaders=host&X-Amz-Signature=85f6727c5ddf36ad84c7ae51c69d3341b945d87a1b22e0bb562f77399d74b8aa
 ```
 Or you can download it from https://figshare.com/articles/figure/FIVES_A_Fundus_Image_Dataset_for_AI-based_Vessel_Segmentation/19688169/1
+You may need to pre crop the image into a small image of 256 * 256 size using data_pre.py
 Then, you need a pre training weight from SAMMed2d or SAM-vit-b
 SAMMed2d:
 download from https://drive.google.com/file/d/1ARiB5RkSsWmAB_8mqWnwDF8ZKTtFwsjl/view?usp=drive_link
